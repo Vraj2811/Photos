@@ -7,9 +7,14 @@ class VectorDB:
     def __init__(self):
         self.index_file = FAISS_INDEX_PATH / "vectors.index"
         self.mapping_file = FAISS_INDEX_PATH / "mapping.json"
+        
+        # Ensure directory exists
+        FAISS_INDEX_PATH.mkdir(parents=True, exist_ok=True)
+        
         self.index = None
         self.id_mapping = {}
         self.load_or_create_index()
+
     
     def load_or_create_index(self):
         if self.index_file.exists() and self.mapping_file.exists():
