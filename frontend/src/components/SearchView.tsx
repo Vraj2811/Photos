@@ -1,15 +1,26 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Search, Loader2, AlertCircle } from 'lucide-react'
 import { searchImages } from '../api'
-import type { SearchResult } from '../types'
+import type { SearchResult, ImageInfo } from '../types'
 import ImageCard from './ImageCard'
 
-export default function SearchView() {
+interface SearchViewProps {
+  onImageClick: (image: ImageInfo) => void
+  refreshTrigger: number
+}
+
+export default function SearchView({ onImageClick, refreshTrigger }: SearchViewProps) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SearchResult[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [searched, setSearched] = useState(false)
+
+  useEffect(() => {
+    if (searched && query.trim()) {
+      handleSearch()
+    }
+  }, [refreshTrigger])
 
   const handleSearch = async () => {
     if (!query.trim()) return
@@ -17,7 +28,7 @@ export default function SearchView() {
     setLoading(true)
     setError(null)
     setSearched(true)
-    
+
     try {
       const data = await searchImages(query, 10)
       setResults(data)
@@ -115,6 +126,13 @@ export default function SearchView() {
                 description={result.description}
                 confidence={result.confidence}
                 filename={result.filename}
+                onClick={() => onImageClick({
+                  id: result.image_id,
+                  filename: result.filename,
+                  description: result.description,
+                  image_url: result.image_url,
+                  created_at: new Date().toISOString() // Placeholder since SearchResult doesn't have it
+                })}
               />
             ))}
           </div>
@@ -131,7 +149,7 @@ export default function SearchView() {
             Search Your Images with AI
           </h2>
           <p className="text-gray-600 max-w-md mx-auto">
-            Use natural language to find exactly what you're looking for. 
+            Use natural language to find exactly what you're looking for.
             Our AI understands context and meaning, not just keywords.
           </p>
         </div>

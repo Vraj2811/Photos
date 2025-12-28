@@ -31,7 +31,10 @@ export interface UploadResponse {
   error?: string
 }
 
-
-
-
+export interface FaceGroupInfo {
+  id: number
+  name: string | null
+  image_count: number
+  representative_image_url: string | null
+}
 

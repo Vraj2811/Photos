@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { SystemStatus, SearchResult, ImageInfo, UploadResponse } from './types'
+import type { SystemStatus, SearchResult, ImageInfo, UploadResponse, FaceGroupInfo } from './types'
 
 const API_BASE = 'http://localhost:8000'
 
@@ -47,5 +47,15 @@ export const rebuildIndex = async (): Promise<{ success: boolean; count: number 
 
 export const deleteImage = async (imageId: number): Promise<{ success: boolean }> => {
   const response = await api.delete(`/api/images/${imageId}`)
+  return response.data
+}
+
+export const getFaceGroups = async (): Promise<FaceGroupInfo[]> => {
+  const response = await api.get('/api/face-groups')
+  return response.data
+}
+
+export const getFaceGroupImages = async (groupId: number): Promise<ImageInfo[]> => {
+  const response = await api.get(`/api/face-groups/${groupId}`)
   return response.data
 }

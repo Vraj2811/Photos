@@ -1,16 +1,23 @@
 import { useState, useEffect } from 'react'
-import { Search, Upload, Image as ImageIcon, Activity, Sparkles } from 'lucide-react'
+import { Search, Upload, Image as ImageIcon, Activity, Sparkles, Users } from 'lucide-react'
 import SearchView from './components/SearchView'
 import UploadView from './components/UploadView'
 import GalleryView from './components/GalleryView'
+import PeopleView from './components/PeopleView'
+import FaceGroupView from './components/FaceGroupView'
+import ImageModal from './components/ImageModal'
 import StatusBar from './components/StatusBar'
-import { getStatus } from './api'
-import type { SystemStatus } from './types'
+import { getStatus, deleteImage as apiDeleteImage } from './api'
+import type { SystemStatus, ImageInfo } from './types'
 
-type View = 'search' | 'upload' | 'gallery'
+type View = 'search' | 'upload' | 'gallery' | 'people' | 'face-group'
 
 function App() {
   const [currentView, setCurrentView] = useState<View>('search')
+  const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null)
+  const [selectedImage, setSelectedImage] = useState<ImageInfo | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [status, setStatus] = useState<SystemStatus | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -31,6 +38,31 @@ function App() {
     }
   }
 
+  const handleSelectGroup = (groupId: number) => {
+    setSelectedGroupId(groupId)
+    setCurrentView('face-group')
+  }
+
+  const handleDeleteImage = async (imageId: number) => {
+    if (!confirm('Are you sure you want to delete this image? This action cannot be undone.')) {
+      return
+    }
+
+    setDeleting(true)
+    try {
+      await apiDeleteImage(imageId)
+      setSelectedImage(null)
+      setRefreshTrigger(prev => prev + 1)
+      loadStatus() // Refresh status to update counts
+      // Note: Individual views will need to refresh their own data if they are active
+      // We can use a simple event or just let them refresh on mount
+    } catch (err: any) {
+      alert('Failed to delete image: ' + (err.response?.data?.detail || err.message))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <div className="min-h-screen p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
@@ -48,7 +80,7 @@ function App() {
                 <p className="text-gray-600 text-sm">Powered by LLaVA & Embeddings</p>
               </div>
             </div>
-            
+
             {status && (
               <div className="hidden md:block">
                 <StatusBar status={status} />
@@ -78,6 +110,12 @@ function App() {
               icon={<ImageIcon className="w-5 h-5" />}
               label="Gallery"
             />
+            <TabButton
+              active={currentView === 'people' || currentView === 'face-group'}
+              onClick={() => setCurrentView('people')}
+              icon={<Users className="w-5 h-5" />}
+              label="People"
+            />
           </div>
         </nav>
 
@@ -97,12 +135,41 @@ function App() {
             </div>
           ) : (
             <>
-              {currentView === 'search' && <SearchView />}
+              {currentView === 'search' && (
+                <SearchView
+                  onImageClick={setSelectedImage}
+                  refreshTrigger={refreshTrigger}
+                />
+              )}
               {currentView === 'upload' && <UploadView onUploadSuccess={loadStatus} />}
-              {currentView === 'gallery' && <GalleryView />}
+              {currentView === 'gallery' && (
+                <GalleryView
+                  onImageClick={setSelectedImage}
+                  refreshTrigger={refreshTrigger}
+                />
+              )}
+              {currentView === 'people' && <PeopleView onSelectGroup={handleSelectGroup} />}
+              {currentView === 'face-group' && selectedGroupId && (
+                <FaceGroupView
+                  groupId={selectedGroupId}
+                  onBack={() => setCurrentView('people')}
+                  onImageClick={setSelectedImage}
+                  refreshTrigger={refreshTrigger}
+                />
+              )}
             </>
           )}
         </main>
+
+        {/* Global Image Modal */}
+        {selectedImage && (
+          <ImageModal
+            image={selectedImage}
+            onClose={() => setSelectedImage(null)}
+            onDelete={handleDeleteImage}
+            deleting={deleting}
+          />
+        )}
 
         {/* Footer */}
         <footer className="mt-8 text-center text-white text-sm opacity-75">
@@ -124,11 +191,10 @@ function TabButton({ active, onClick, icon, label }: TabButtonProps) {
   return (
     <button
       onClick={onClick}
-      className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-medium transition-all duration-200 ${
-        active
-          ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg scale-105'
-          : 'text-gray-600 hover:bg-gray-100'
-      }`}
+      className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-medium transition-all duration-200 ${active
+        ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg scale-105'
+        : 'text-gray-600 hover:bg-gray-100'
+        }`}
     >
       {icon}
       <span className="hidden sm:inline">{label}</span>
@@ -137,8 +203,3 @@ function TabButton({ active, onClick, icon, label }: TabButtonProps) {
 }
 
 export default App
-
-
-
-
-

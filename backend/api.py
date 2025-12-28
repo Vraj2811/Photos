@@ -21,7 +21,7 @@ import base64
 try:
     import ollama
     import faiss
-    from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime
+    from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Float
     from sqlalchemy.orm import declarative_base, sessionmaker
 except ImportError as e:
     print(f"Missing packages: {e}")
@@ -30,6 +30,10 @@ except ImportError as e:
 from datetime import datetime
 from drive_client import DriveClient
 from fastapi.responses import Response
+import cv2
+from insightface.app import FaceAnalysis
+from sqlalchemy import ForeignKey
+from sqlalchemy.orm import relationship
 
 # Configuration
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -60,6 +64,32 @@ class ImageRecord(Base):
     description = Column(Text)
     embedding = Column(Text)
     created_at = Column(DateTime, default=datetime.now)
+    
+    # Relationships
+    faces = relationship("DetectedFace", back_populates="image", cascade="all, delete-orphan")
+
+class FaceGroup(Base):
+    __tablename__ = 'face_groups'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=True)
+    representative_embedding = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)
+    
+    # Relationships
+    faces = relationship("DetectedFace", back_populates="group")
+
+class DetectedFace(Base):
+    __tablename__ = 'detected_faces'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    image_id = Column(Integer, ForeignKey('images.id'))
+    group_id = Column(Integer, ForeignKey('face_groups.id'))
+    embedding = Column(Text)
+    bbox = Column(Text)  # JSON string of [x1, y1, x2, y2]
+    confidence = Column(Float)
+    
+    # Relationships
+    image = relationship("ImageRecord", back_populates="faces")
+    group = relationship("FaceGroup", back_populates="faces")
 
 # Initialize database
 engine = create_engine(DATABASE_URL, echo=False)
@@ -99,6 +129,19 @@ class VectorStats(BaseModel):
     std: float
     min_val: float
     max_val: float
+
+class FaceGroupInfo(BaseModel):
+    id: int
+    name: Optional[str]
+    image_count: int
+    representative_image_url: Optional[str]
+
+class DetectedFaceInfo(BaseModel):
+    id: int
+    image_id: int
+    group_id: int
+    bbox: List[float]
+    confidence: float
 
 # Database helper
 class ImageDB:
@@ -168,6 +211,57 @@ class ImageDB:
         finally:
             session.close()
 
+    def add_face_group(self, embedding):
+        session = self.SessionLocal()
+        try:
+            embedding_json = json.dumps(embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding))
+            group = FaceGroup(representative_embedding=embedding_json)
+            session.add(group)
+            session.commit()
+            return group.id
+        except Exception as e:
+            session.rollback()
+            print(f"Failed to add face group: {e}")
+            return None
+        finally:
+            session.close()
+
+    def add_detected_face(self, image_id, group_id, embedding, bbox, confidence):
+        session = self.SessionLocal()
+        try:
+            embedding_json = json.dumps(embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding))
+            bbox_json = json.dumps(bbox.tolist() if hasattr(bbox, 'tolist') else list(bbox))
+            face = DetectedFace(
+                image_id=image_id,
+                group_id=group_id,
+                embedding=embedding_json,
+                bbox=bbox_json,
+                confidence=float(confidence)
+            )
+            session.add(face)
+            session.commit()
+            return face.id
+        except Exception as e:
+            session.rollback()
+            print(f"Failed to add detected face: {e}")
+            return None
+        finally:
+            session.close()
+
+    def get_all_face_groups(self):
+        session = self.SessionLocal()
+        try:
+            return session.query(FaceGroup).all()
+        finally:
+            session.close()
+
+    def get_faces_by_group(self, group_id):
+        session = self.SessionLocal()
+        try:
+            return session.query(DetectedFace).filter(DetectedFace.group_id == group_id).all()
+        finally:
+            session.close()
+
 # Ollama processor
 class OllamaProcessor:
     def __init__(self):
@@ -233,6 +327,61 @@ class OllamaProcessor:
         except Exception as e:
             print(f"Embedding failed: {e}")
             return None
+
+# Face Processor
+class FaceProcessor:
+    def __init__(self):
+        print("Initializing FaceAnalysis(name='buffalo_l')...")
+        self.app = FaceAnalysis(name="buffalo_l", providers=['CPUExecutionProvider'])
+        self.app.prepare(ctx_id=0, det_size=(640, 640))
+        self.similarity_threshold = 0.6
+
+    def process_image(self, image_bytes, image_id):
+        try:
+            # Convert bytes to cv2 image
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if img is None:
+                print(f"Failed to decode image for face analysis (ID: {image_id})")
+                return
+            
+            faces = self.app.get(img)
+            print(f"Detected {len(faces)} faces in image {image_id}")
+            
+            for face in faces:
+                embedding = face.normed_embedding
+                bbox = face.bbox
+                confidence = face.det_score
+                
+                # Find matching group
+                group_id = self.find_matching_group(embedding)
+                
+                if group_id is None:
+                    # Create new group
+                    group_id = db.add_face_group(embedding)
+                    print(f"Created new face group {group_id}")
+                
+                # Save detected face
+                db.add_detected_face(image_id, group_id, embedding, bbox, confidence)
+                
+        except Exception as e:
+            print(f"Face processing failed for image {image_id}: {e}")
+
+    def find_matching_group(self, face_embedding):
+        groups = db.get_all_face_groups()
+        best_match_id = None
+        best_similarity = -1
+        
+        for group in groups:
+            group_embedding = np.array(json.loads(group.representative_embedding), dtype=np.float32)
+            similarity = np.dot(face_embedding, group_embedding)
+            
+            if similarity > self.similarity_threshold and similarity > best_similarity:
+                best_similarity = similarity
+                best_match_id = group.id
+                
+        return best_match_id
 
 # FAISS vector DB
 class VectorDB:
@@ -335,6 +484,7 @@ class VectorDB:
 db = ImageDB()
 ollama_proc = OllamaProcessor()
 vector_db = VectorDB()
+face_proc = FaceProcessor()
 drive_client = DriveClient(str(SERVICE_ACCOUNT_DIR))
 
 # Create FastAPI app
@@ -543,6 +693,10 @@ async def upload_image(file: UploadFile = File(...)):
         if embedding is not None:
             vector_db.add_vector(embedding, image_id)
         
+        # Process faces asynchronously (simulated for now, could use BackgroundTasks)
+        print(f"Processing faces for {filename}...")
+        face_proc.process_image(contents, image_id)
+        
         return {
             "success": True,
             "image_id": image_id,
@@ -646,6 +800,11 @@ async def sync_drive():
             if image_id:
                 if embedding is not None:
                     vector_db.add_vector(embedding, image_id)
+                
+                # Process faces
+                print(f"Processing faces for {filename}...")
+                face_proc.process_image(content, image_id)
+                
                 count += 1
                 print(f"Added {filename}")
         
@@ -663,6 +822,53 @@ async def get_drive_image(file_id: str):
         return Response(content=content, media_type="image/jpeg") 
     except Exception as e:
         raise HTTPException(status_code=404, detail="Image not found")
+
+@app.get("/api/face-groups", response_model=List[FaceGroupInfo])
+async def get_face_groups():
+    """Get all face groups with representative images"""
+    groups = db.get_all_face_groups()
+    results = []
+    
+    for group in groups:
+        faces = db.get_faces_by_group(group.id)
+        if not faces:
+            continue
+            
+        # Use the first face's image as representative
+        rep_face = faces[0]
+        img = db.get_image_by_id(rep_face.image_id)
+        
+        results.append(FaceGroupInfo(
+            id=group.id,
+            name=group.name,
+            image_count=len(faces),
+            representative_image_url=f"/api/drive-image/{img.drive_file_id}" if img and img.drive_file_id else None
+        ))
+        
+    return results
+
+@app.get("/api/face-groups/{group_id}", response_model=List[ImageInfo])
+async def get_face_group_images(group_id: int):
+    """Get all images in a face group"""
+    faces = db.get_faces_by_group(group_id)
+    if not faces:
+        raise HTTPException(status_code=404, detail="Group not found or empty")
+        
+    image_ids = list(set(face.image_id for face in faces))
+    results = []
+    
+    for img_id in image_ids:
+        img = db.get_image_by_id(img_id)
+        if img:
+            results.append(ImageInfo(
+                id=img.id,
+                filename=img.filename,
+                description=img.description or "",
+                created_at=img.created_at.isoformat() if img.created_at else "",
+                image_url=f"/api/drive-image/{img.drive_file_id}" if img.drive_file_id else f"/images/{img.filename}"
+            ))
+            
+    return results
 
 if __name__ == "__main__":
     import uvicorn
