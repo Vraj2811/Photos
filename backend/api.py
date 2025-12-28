@@ -3,8 +3,9 @@ FastAPI Backend for AI Image Search System
 Provides REST API endpoints for React frontend
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Response
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Response, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from typing import List
 import json
 import time
@@ -78,7 +79,7 @@ async def search_images(query: SearchQuery):
         raise HTTPException(status_code=404, detail="No images in database")
     
     # Generate query embedding
-    query_embedding = ollama_proc.generate_embedding(query.query)
+    query_embedding = await run_in_threadpool(ollama_proc.generate_embedding, query.query)
     if query_embedding is None:
         raise HTTPException(status_code=500, detail="Failed to generate embedding")
     
@@ -161,7 +162,7 @@ async def delete_image(image_id: int):
         raise HTTPException(status_code=500, detail="Failed to delete from database")
 
 @app.post("/api/upload")
-async def upload_image(file: UploadFile = File(...)):
+async def upload_image(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     """Upload and process image or video"""
     try:
         # Read file content
@@ -189,7 +190,7 @@ async def upload_image(file: UploadFile = File(...)):
             
             # Generate description for image
             print(f"Generating description for {file.filename}...")
-            description = ollama_proc.generate_description(contents)
+            description = await run_in_threadpool(ollama_proc.generate_description, contents)
             
             if not description:
                 print(f"Warning: Failed to generate description for {file.filename}. Using placeholder.")
@@ -197,7 +198,7 @@ async def upload_image(file: UploadFile = File(...)):
             else:
                 # Generate embedding only if description succeeded
                 print(f"Generating embedding for {file.filename}...")
-                embedding = ollama_proc.generate_embedding(description)
+                embedding = await run_in_threadpool(ollama_proc.generate_embedding, description)
 
         # Generate filename
         timestamp = int(time.time())
@@ -206,7 +207,7 @@ async def upload_image(file: UploadFile = File(...)):
 
         # Upload to Drive
         print(f"Uploading {filename} to Drive...")
-        drive_file_id = drive_client.upload_file(filename, contents, DRIVE_FOLDER_ID, mime_type=content_type or 'application/octet-stream')
+        drive_file_id = await run_in_threadpool(drive_client.upload_file, filename, contents, DRIVE_FOLDER_ID, content_type or 'application/octet-stream')
         
         if not drive_file_id:
              raise HTTPException(status_code=500, detail="Failed to upload to Drive")
@@ -235,9 +236,9 @@ async def upload_image(file: UploadFile = File(...)):
         if embedding is not None:
             vector_db.add_vector(embedding, image_id)
         
-        # Process faces asynchronously (simulated for now, could use BackgroundTasks)
-        print(f"Processing faces for {filename}...")
-        face_proc.process_image(contents, image_id)
+        # Process faces asynchronously
+        print(f"Queueing face processing for {filename}...")
+        background_tasks.add_task(face_proc.process_image, contents, image_id)
         
         return {
             "success": True,
@@ -302,8 +303,13 @@ async def rebuild_index():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/sync-drive")
-async def sync_drive():
+async def sync_drive(background_tasks: BackgroundTasks):
     """Sync images from Google Drive"""
+    background_tasks.add_task(run_sync_drive)
+    return {"success": True, "message": "Sync started in background"}
+
+def run_sync_drive():
+    """Internal function for background sync"""
     try:
         print(f"Syncing from Drive Folder: {DRIVE_FOLDER_ID}")
         files = drive_client.list_images_in_folder(DRIVE_FOLDER_ID)
@@ -360,7 +366,7 @@ async def sync_drive():
 async def get_drive_image(file_id: str):
     """Serve image from Google Drive"""
     try:
-        content = drive_client.download_file(file_id)
+        content = await run_in_threadpool(drive_client.download_file, file_id)
         return Response(content=content, media_type="image/jpeg") 
     except Exception as e:
         raise HTTPException(status_code=404, detail="Image not found")
