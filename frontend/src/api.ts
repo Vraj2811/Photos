@@ -5,7 +5,7 @@ const API_BASE = 'http://localhost:8000'
 
 const api = axios.create({
   baseURL: API_BASE,
-  timeout: 30000,
+  timeout: 120000,
 })
 
 export const getStatus = async (): Promise<SystemStatus> => {
@@ -31,7 +31,7 @@ export const getImage = async (imageId: number): Promise<ImageInfo> => {
 export const uploadImage = async (file: File): Promise<UploadResponse> => {
   const formData = new FormData()
   formData.append('file', file)
-  
+
   const response = await api.post('/api/upload', formData, {
     headers: {
       'Content-Type': 'multipart/form-data',
@@ -45,7 +45,7 @@ export const rebuildIndex = async (): Promise<{ success: boolean; count: number 
   return response.data
 }
 
-
-
-
-
+export const deleteImage = async (imageId: number): Promise<{ success: boolean }> => {
+  const response = await api.delete(`/api/images/${imageId}`)
+  return response.data
+}

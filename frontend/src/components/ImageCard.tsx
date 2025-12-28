@@ -3,9 +3,10 @@ interface ImageCardProps {
   description: string
   confidence?: number
   filename: string
+  onClick?: () => void
 }
 
-export default function ImageCard({ imageUrl, description, confidence, filename }: ImageCardProps) {
+export default function ImageCard({ imageUrl, description, confidence, filename, onClick }: ImageCardProps) {
   const getConfidenceBadge = (score: number) => {
     if (score >= 0.8) return { label: 'Excellent', color: 'bg-green-500' }
     if (score >= 0.6) return { label: 'Good', color: 'bg-blue-500' }
@@ -16,7 +17,10 @@ export default function ImageCard({ imageUrl, description, confidence, filename 
   const badge = confidence !== undefined ? getConfidenceBadge(confidence) : null
 
   return (
-    <div className="group bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-2xl transition-all duration-300 hover:scale-105">
+    <div
+      onClick={onClick}
+      className="group bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-2xl transition-all duration-300 hover:scale-105 cursor-pointer"
+    >
       {/* Image */}
       <div className="relative aspect-video overflow-hidden bg-gray-100">
         <img
@@ -34,7 +38,7 @@ export default function ImageCard({ imageUrl, description, confidence, filename 
 
       {/* Content */}
       <div className="p-4">
-        <p className="text-gray-800 text-sm leading-relaxed mb-2">
+        <p className="text-gray-800 text-sm leading-relaxed mb-2 line-clamp-2">
           {description}
         </p>
         <p className="text-xs text-gray-400 truncate">

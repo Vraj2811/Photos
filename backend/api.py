@@ -16,6 +16,7 @@ import hashlib
 import numpy as np
 from PIL import Image
 import io
+import base64
 
 try:
     import ollama
@@ -27,6 +28,8 @@ except ImportError as e:
     exit(1)
 
 from datetime import datetime
+from drive_client import DriveClient
+from fastapi.responses import Response
 
 # Configuration
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -38,6 +41,8 @@ VISION_MODEL = "llava"
 EMBEDDING_MODEL = "nomic-embed-text"
 EMBEDDING_DIMENSION = 768
 DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
+DRIVE_FOLDER_ID = "1GJ1Bl35jOKckFSoZb4b3Ube5VBxfKvH-"
+SERVICE_ACCOUNT_DIR = PROJECT_ROOT / "Service Account Utility" / "accounts"
 
 # Ensure directories exist
 IMAGES_FOLDER.mkdir(exist_ok=True)
@@ -50,7 +55,8 @@ class ImageRecord(Base):
     __tablename__ = 'images'
     id = Column(Integer, primary_key=True, autoincrement=True)
     filename = Column(String(255), nullable=False)
-    file_path = Column(Text, nullable=False)
+    file_path = Column(Text, nullable=True)  # Nullable for Drive images
+    drive_file_id = Column(String(255), nullable=True) # New column
     description = Column(Text)
     embedding = Column(Text)
     created_at = Column(DateTime, default=datetime.now)
@@ -99,13 +105,18 @@ class ImageDB:
     def __init__(self):
         self.SessionLocal = SessionLocal
     
-    def add_image(self, filename, file_path, description, embedding):
+    def add_image(self, filename, file_path, description, embedding, **kwargs):
         session = self.SessionLocal()
         try:
-            embedding_json = json.dumps(embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding))
+            if embedding is not None:
+                embedding_json = json.dumps(embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding))
+            else:
+                embedding_json = None
+                
             image_record = ImageRecord(
                 filename=filename,
                 file_path=file_path,
+                drive_file_id=kwargs.get('drive_file_id'),
                 description=description,
                 embedding=embedding_json,
                 created_at=datetime.now()
@@ -134,6 +145,29 @@ class ImageDB:
         finally:
             session.close()
 
+    def get_image_by_drive_id(self, drive_id):
+        session = self.SessionLocal()
+        try:
+            return session.query(ImageRecord).filter(ImageRecord.drive_file_id == drive_id).first()
+        finally:
+            session.close()
+
+    def delete_image(self, image_id):
+        session = self.SessionLocal()
+        try:
+            image = session.query(ImageRecord).filter(ImageRecord.id == image_id).first()
+            if image:
+                session.delete(image)
+                session.commit()
+                return True
+            return False
+        except Exception as e:
+            session.rollback()
+            print(f"Delete failed: {e}")
+            return False
+        finally:
+            session.close()
+
 # Ollama processor
 class OllamaProcessor:
     def __init__(self):
@@ -153,14 +187,23 @@ class OllamaProcessor:
         except:
             return False
     
-    def generate_description(self, image_path):
+    def generate_description(self, image_input):
         try:
+            images = []
+            if isinstance(image_input, bytes):
+                # Convert bytes to base64 string
+                base64_image = base64.b64encode(image_input).decode('utf-8')
+                images.append(base64_image)
+            else:
+                # Path string
+                images.append(image_input)
+
             response = ollama.chat(
                 model=self.vision_model,
                 messages=[{
                     'role': 'user',
                     'content': 'Describe this image in 2-3 clear, concise sentences.',
-                    'images': [str(image_path)]
+                    'images': images
                 }]
             )
             return response['message']['content'].strip()
@@ -249,6 +292,36 @@ class VectorDB:
         except:
             return []
     
+    def delete_vector(self, image_id):
+        try:
+            # Find faiss index for image_id
+            faiss_idx = -1
+            for k, v in self.id_mapping.items():
+                if v == image_id:
+                    faiss_idx = k
+                    break
+            
+            if faiss_idx != -1:
+                # Remove from FAISS
+                self.index.remove_ids(np.array([faiss_idx], dtype=np.int64))
+                
+                # Update mapping (shift indices)
+                new_mapping = {}
+                for k, v in self.id_mapping.items():
+                    if k < faiss_idx:
+                        new_mapping[k] = v
+                    elif k > faiss_idx:
+                        new_mapping[k - 1] = v
+                self.id_mapping = new_mapping
+                
+                self.save_index()
+                print(f"Deleted vector for image {image_id} (index {faiss_idx})")
+                return True
+            return False
+        except Exception as e:
+            print(f"Failed to delete vector: {e}")
+            return False
+
     def save_index(self):
         try:
             faiss.write_index(self.index, str(self.index_file))
@@ -262,6 +335,7 @@ class VectorDB:
 db = ImageDB()
 ollama_proc = OllamaProcessor()
 vector_db = VectorDB()
+drive_client = DriveClient(str(SERVICE_ACCOUNT_DIR))
 
 # Create FastAPI app
 app = FastAPI(
@@ -325,7 +399,7 @@ async def search_images(query: SearchQuery):
                 filename=img.filename,
                 description=img.description or "",
                 confidence=result['confidence'],
-                image_url=f"/images/{img.filename}"
+                image_url=f"/api/drive-image/{img.drive_file_id}" if img.drive_file_id else f"/images/{img.filename}"
             ))
     
     return results
@@ -342,7 +416,7 @@ async def get_all_images(limit: int = Query(50, le=200)):
             filename=img.filename,
             description=img.description or "",
             created_at=img.created_at.isoformat() if img.created_at else "",
-            image_url=f"/images/{img.filename}"
+            image_url=f"/api/drive-image/{img.drive_file_id}" if img.drive_file_id else f"/images/{img.filename}"
         ))
     
     return results
@@ -359,8 +433,29 @@ async def get_image(image_id: int):
         filename=img.filename,
         description=img.description or "",
         created_at=img.created_at.isoformat() if img.created_at else "",
-        image_url=f"/images/{img.filename}"
+        image_url=f"/api/drive-image/{img.drive_file_id}" if img.drive_file_id else f"/images/{img.filename}"
     )
+
+@app.delete("/api/images/{image_id}")
+async def delete_image(image_id: int):
+    """Delete image from DB and Drive"""
+    img = db.get_image_by_id(image_id)
+    if not img:
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    # Delete from Drive
+    if img.drive_file_id:
+        print(f"Deleting from Drive: {img.drive_file_id}")
+        drive_client.delete_file(img.drive_file_id)
+    
+    # Delete from Vector DB
+    vector_db.delete_vector(image_id)
+    
+    # Delete from DB
+    if db.delete_image(image_id):
+        return {"success": True, "message": "Image deleted"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to delete from database")
 
 @app.post("/api/upload")
 async def upload_image(file: UploadFile = File(...)):
@@ -368,44 +463,63 @@ async def upload_image(file: UploadFile = File(...)):
     try:
         # Read image
         contents = await file.read()
-        image = Image.open(io.BytesIO(contents))
+        
+        # Validate image
+        try:
+            image = Image.open(io.BytesIO(contents))
+            image.verify()
+            # Re-open because verify() can close the file pointer or leave it at end
+            image = Image.open(io.BytesIO(contents)) 
+        except Exception:
+             raise HTTPException(status_code=400, detail="Invalid image file")
         
         # Generate filename
         timestamp = int(time.time())
         file_hash = hashlib.md5(contents).hexdigest()[:8]
         filename = f"{timestamp}_{file_hash}_{file.filename}"
-        file_path = IMAGES_FOLDER / filename
-        
-        # Save image
-        image.save(file_path)
         
         # Generate description
-        description = ollama_proc.generate_description(file_path)
-        if not description:
-            return {"success": False, "error": "Failed to generate description"}
+        print(f"Generating description for {filename}...")
+        description = ollama_proc.generate_description(contents)
+        embedding = None
         
-        # Generate embedding
-        embedding = ollama_proc.generate_embedding(description)
-        if embedding is None:
-            return {"success": False, "error": "Failed to generate embedding"}
+        if not description:
+            print(f"Warning: Failed to generate description for {filename}. Using placeholder.")
+            description = "Image uploaded (AI description unavailable due to system limitations)"
+        else:
+            # Generate embedding only if description succeeded
+            print(f"Generating embedding for {filename}...")
+            embedding = ollama_proc.generate_embedding(description)
+
+        # Upload to Drive
+        print(f"Uploading {filename} to Drive...")
+        drive_file_id = drive_client.upload_file(filename, contents, DRIVE_FOLDER_ID, mime_type=file.content_type or 'image/jpeg')
+        
+        if not drive_file_id:
+             raise HTTPException(status_code=500, detail="Failed to upload to Drive")
         
         # Save to database
-        image_id = db.add_image(filename, str(file_path), description, embedding)
+        print(f"Saving {filename} to database...")
+        image_id = db.add_image(filename, None, description, embedding, drive_file_id=drive_file_id)
         if not image_id:
+            print(f"Failed to save to DB. Cleaning up Drive file {drive_file_id}...")
+            drive_client.delete_file(drive_file_id)
             return {"success": False, "error": "Failed to save to database"}
         
-        # Add to vector index
-        vector_db.add_vector(embedding, image_id)
+        # Add to vector index if embedding exists
+        if embedding is not None:
+            vector_db.add_vector(embedding, image_id)
         
         return {
             "success": True,
             "image_id": image_id,
             "filename": filename,
             "description": description,
-            "image_url": f"/images/{filename}"
+            "image_url": f"/api/drive-image/{drive_file_id}"
         }
         
     except Exception as e:
+        print(f"Upload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/vector/{image_id}", response_model=VectorStats)
@@ -458,6 +572,65 @@ async def rebuild_index():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/sync-drive")
+async def sync_drive():
+    """Sync images from Google Drive"""
+    try:
+        print(f"Syncing from Drive Folder: {DRIVE_FOLDER_ID}")
+        files = drive_client.list_images_in_folder(DRIVE_FOLDER_ID)
+        print(f"Found {len(files)} images in Drive")
+        
+        count = 0
+        for file in files:
+            file_id = file['id']
+            filename = file['name']
+            
+            # Check if already exists
+            if db.get_image_by_drive_id(file_id):
+                continue
+            
+            print(f"Processing {filename} ({file_id})...")
+            
+            # Download content
+            content = drive_client.download_file(file_id)
+            
+            # Generate description
+            description = None
+            embedding = None
+            
+            try:
+                # Ollama accepts bytes directly in 'images' list
+                description = ollama_proc.generate_description(content)
+                if description:
+                    # Generate embedding
+                    embedding = ollama_proc.generate_embedding(description)
+            except Exception as e:
+                print(f"AI processing failed for {filename}: {e}")
+                description = "Image from Google Drive (AI processing skipped)"
+            
+            # Save to DB even if AI failed
+            image_id = db.add_image(filename, None, description, embedding, drive_file_id=file_id)
+            if image_id:
+                if embedding is not None:
+                    vector_db.add_vector(embedding, image_id)
+                count += 1
+                print(f"Added {filename}")
+        
+        return {"success": True, "count": count}
+            
+    except Exception as e:
+        print(f"Sync failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/drive-image/{file_id}")
+async def get_drive_image(file_id: str):
+    """Serve image from Google Drive"""
+    try:
+        content = drive_client.download_file(file_id)
+        return Response(content=content, media_type="image/jpeg") 
+    except Exception as e:
+        raise HTTPException(status_code=404, detail="Image not found")
+
 if __name__ == "__main__":
     import uvicorn
     print("🚀 Starting AI Image Search API...")
@@ -465,8 +638,3 @@ if __name__ == "__main__":
     print(f"💾 Database: {DATABASE_PATH}")
     print(f"🔢 Vectors: {vector_db.index.ntotal if vector_db.index else 0}")
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
-
-
-

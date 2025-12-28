@@ -43,7 +43,7 @@ python3 api.py &
 BACKEND_PID=$!
 
 # Wait for backend to start
-sleep 3
+sleep 10
 
 # Check if backend started successfully
 if ! curl -s http://localhost:8000/ > /dev/null 2>&1; then
@@ -76,8 +76,3 @@ echo ""
 
 # Wait indefinitely
 wait
-
-
-
-
-
