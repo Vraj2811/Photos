@@ -519,6 +519,18 @@ async def upload_image(file: UploadFile = File(...)):
         if not drive_file_id:
              raise HTTPException(status_code=500, detail="Failed to upload to Drive")
         
+        # If it's a video, return early and do not add to database
+        if is_video:
+            print(f"Video {filename} uploaded to Drive. Skipping database entry as requested.")
+            return {
+                "success": True,
+                "image_id": None,
+                "filename": filename,
+                "description": description,
+                "image_url": f"/api/drive-image/{drive_file_id}",
+                "message": "Video uploaded to Drive (not stored in database)"
+            }
+
         # Save to database
         print(f"Saving {filename} to database...")
         image_id = db.add_image(filename, None, description, embedding, drive_file_id=drive_file_id)
