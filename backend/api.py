@@ -34,7 +34,7 @@ from fastapi.responses import Response
 # Configuration
 PROJECT_ROOT = Path(__file__).parent.parent
 DATABASE_PATH = PROJECT_ROOT / "image_search.db"
-IMAGES_FOLDER = PROJECT_ROOT / "images"
+
 FAISS_INDEX_PATH = PROJECT_ROOT / "faiss_indexes"
 
 VISION_MODEL = "llava"
@@ -45,7 +45,7 @@ DRIVE_FOLDER_ID = "1GJ1Bl35jOKckFSoZb4b3Ube5VBxfKvH-"
 SERVICE_ACCOUNT_DIR = PROJECT_ROOT / "Service Account Utility" / "accounts"
 
 # Ensure directories exist
-IMAGES_FOLDER.mkdir(exist_ok=True)
+
 FAISS_INDEX_PATH.mkdir(exist_ok=True)
 
 # Database setup
@@ -354,7 +354,7 @@ app.add_middleware(
 )
 
 # Serve images
-app.mount("/images", StaticFiles(directory=str(IMAGES_FOLDER)), name="images")
+
 
 # API Endpoints
 
@@ -634,7 +634,6 @@ async def get_drive_image(file_id: str):
 if __name__ == "__main__":
     import uvicorn
     print("🚀 Starting AI Image Search API...")
-    print(f"📁 Images: {IMAGES_FOLDER}")
     print(f"💾 Database: {DATABASE_PATH}")
     print(f"🔢 Vectors: {vector_db.index.ntotal if vector_db.index else 0}")
     uvicorn.run(app, host="0.0.0.0", port=8000)
