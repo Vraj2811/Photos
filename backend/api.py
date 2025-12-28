@@ -365,14 +365,18 @@ async def root():
 @app.get("/api/status", response_model=SystemStatus)
 async def get_status():
     """Get system status"""
-    all_images = db.get_all_images()
+    all_items = db.get_all_images()
+    
+    # Filter out videos for the count
+    video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.webm'}
+    image_count = sum(1 for img in all_items if not any(img.filename.lower().endswith(ext) for ext in video_extensions))
     
     return SystemStatus(
-        total_images=len(all_images),
+        total_images=image_count,
         total_vectors=vector_db.index.ntotal if vector_db.index else 0,
         ollama_connected=len(ollama_proc.models_available) > 0,
         models_available=ollama_proc.models_available,
-        status="ready" if len(all_images) > 0 else "empty"
+        status="ready" if image_count > 0 else "empty"
     )
 
 @app.post("/api/search", response_model=List[SearchResult])
@@ -406,11 +410,18 @@ async def search_images(query: SearchQuery):
 
 @app.get("/api/images", response_model=List[ImageInfo])
 async def get_all_images(limit: int = Query(50, le=200)):
-    """Get all images"""
+    """Get all images (excluding videos)"""
     all_images = db.get_all_images()
     
+    # Filter out videos
+    video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.webm'}
+    filtered_images = [
+        img for img in all_images 
+        if not any(img.filename.lower().endswith(ext) for ext in video_extensions)
+    ]
+    
     results = []
-    for img in all_images[:limit]:
+    for img in filtered_images[:limit]:
         results.append(ImageInfo(
             id=img.id,
             filename=img.filename,
@@ -459,41 +470,51 @@ async def delete_image(image_id: int):
 
 @app.post("/api/upload")
 async def upload_image(file: UploadFile = File(...)):
-    """Upload and process image"""
+    """Upload and process image or video"""
     try:
-        # Read image
+        # Read file content
         contents = await file.read()
         
-        # Validate image
-        try:
-            image = Image.open(io.BytesIO(contents))
-            image.verify()
-            # Re-open because verify() can close the file pointer or leave it at end
-            image = Image.open(io.BytesIO(contents)) 
-        except Exception:
-             raise HTTPException(status_code=400, detail="Invalid image file")
+        # Determine if it's a video
+        content_type = file.content_type or ""
+        is_video = content_type.startswith("video/")
         
+        description = None
+        embedding = None
+        
+        if is_video:
+            print(f"Video detected: {file.filename}")
+            description = "Video uploaded (AI processing skipped)"
+        else:
+            # Validate image if not video
+            try:
+                image = Image.open(io.BytesIO(contents))
+                image.verify()
+                # Re-open because verify() can close the file pointer or leave it at end
+                image = Image.open(io.BytesIO(contents)) 
+            except Exception:
+                 raise HTTPException(status_code=400, detail="Invalid image file")
+            
+            # Generate description for image
+            print(f"Generating description for {file.filename}...")
+            description = ollama_proc.generate_description(contents)
+            
+            if not description:
+                print(f"Warning: Failed to generate description for {file.filename}. Using placeholder.")
+                description = "Image uploaded (AI description unavailable due to system limitations)"
+            else:
+                # Generate embedding only if description succeeded
+                print(f"Generating embedding for {file.filename}...")
+                embedding = ollama_proc.generate_embedding(description)
+
         # Generate filename
         timestamp = int(time.time())
         file_hash = hashlib.md5(contents).hexdigest()[:8]
         filename = f"{timestamp}_{file_hash}_{file.filename}"
-        
-        # Generate description
-        print(f"Generating description for {filename}...")
-        description = ollama_proc.generate_description(contents)
-        embedding = None
-        
-        if not description:
-            print(f"Warning: Failed to generate description for {filename}. Using placeholder.")
-            description = "Image uploaded (AI description unavailable due to system limitations)"
-        else:
-            # Generate embedding only if description succeeded
-            print(f"Generating embedding for {filename}...")
-            embedding = ollama_proc.generate_embedding(description)
 
         # Upload to Drive
         print(f"Uploading {filename} to Drive...")
-        drive_file_id = drive_client.upload_file(filename, contents, DRIVE_FOLDER_ID, mime_type=file.content_type or 'image/jpeg')
+        drive_file_id = drive_client.upload_file(filename, contents, DRIVE_FOLDER_ID, mime_type=content_type or 'application/octet-stream')
         
         if not drive_file_id:
              raise HTTPException(status_code=500, detail="Failed to upload to Drive")

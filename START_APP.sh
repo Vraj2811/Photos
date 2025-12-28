@@ -30,7 +30,13 @@ PROJECT_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cleanup() {
     echo ""
     echo "Shutting down servers..."
+    # Kill the specific PIDs
     kill $BACKEND_PID $FRONTEND_PID 2>/dev/null
+    # Also try to kill any python process running api.py in case it spawned children or didn't die
+    pkill -f "python3 api.py" 2>/dev/null
+    # Stop Ollama
+    echo "Stopping Ollama..."
+    pkill -f "ollama serve" 2>/dev/null
     exit 0
 }
 

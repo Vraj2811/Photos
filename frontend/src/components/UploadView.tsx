@@ -25,7 +25,7 @@ export default function UploadView({ onUploadSuccess }: UploadViewProps) {
       status: 'pending' as const
     }))
     setImages(prev => [...prev, ...newImages])
-    
+
     // Auto-upload
     newImages.forEach(img => handleUpload(img))
   }, [])
@@ -33,23 +33,24 @@ export default function UploadView({ onUploadSuccess }: UploadViewProps) {
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: {
-      'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp']
+      'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp'],
+      'video/*': ['.mp4', '.mov', '.avi', '.mkv']
     },
     multiple: true
   })
 
   const handleUpload = async (image: UploadedImage) => {
-    setImages(prev => prev.map(img => 
+    setImages(prev => prev.map(img =>
       img.preview === image.preview ? { ...img, status: 'uploading' } : img
     ))
 
     try {
       const result = await uploadImage(image.file)
-      
+
       if (result.success) {
-        setImages(prev => prev.map(img => 
-          img.preview === image.preview 
-            ? { ...img, status: 'success', description: result.description } 
+        setImages(prev => prev.map(img =>
+          img.preview === image.preview
+            ? { ...img, status: 'success', description: result.description }
             : img
         ))
         onUploadSuccess()
@@ -57,9 +58,9 @@ export default function UploadView({ onUploadSuccess }: UploadViewProps) {
         throw new Error(result.error || 'Upload failed')
       }
     } catch (error: any) {
-      setImages(prev => prev.map(img => 
-        img.preview === image.preview 
-          ? { ...img, status: 'error', error: error.message } 
+      setImages(prev => prev.map(img =>
+        img.preview === image.preview
+          ? { ...img, status: 'error', error: error.message }
           : img
       ))
     }
@@ -74,11 +75,10 @@ export default function UploadView({ onUploadSuccess }: UploadViewProps) {
       {/* Dropzone */}
       <div
         {...getRootProps()}
-        className={`border-3 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all duration-200 ${
-          isDragActive
+        className={`border-3 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all duration-200 ${isDragActive
             ? 'border-indigo-500 bg-indigo-50'
             : 'border-gray-300 hover:border-indigo-400 hover:bg-gray-50'
-        }`}
+          }`}
       >
         <input {...getInputProps()} />
         <div className="flex flex-col items-center gap-4">
@@ -87,13 +87,13 @@ export default function UploadView({ onUploadSuccess }: UploadViewProps) {
           </div>
           <div>
             <p className="text-xl font-semibold text-gray-800 mb-2">
-              {isDragActive ? 'Drop images here' : 'Upload Images'}
+              {isDragActive ? 'Drop files here' : 'Upload Images or Videos'}
             </p>
             <p className="text-gray-600">
-              Drag & drop images here, or click to select
+              Drag & drop files here, or click to select
             </p>
             <p className="text-sm text-gray-400 mt-2">
-              Supports: JPG, PNG, GIF, WEBP
+              Supports: JPG, PNG, GIF, WEBP, MP4, MOV
             </p>
           </div>
         </div>
@@ -121,12 +121,18 @@ export default function UploadView({ onUploadSuccess }: UploadViewProps) {
                 className="bg-white rounded-xl p-4 shadow-md flex items-center gap-4"
               >
                 {/* Thumbnail */}
-                <div className="w-24 h-24 rounded-lg overflow-hidden bg-gray-100 flex-shrink-0">
-                  <img
-                    src={image.preview}
-                    alt={image.file.name}
-                    className="w-full h-full object-cover"
-                  />
+                <div className="w-24 h-24 rounded-lg overflow-hidden bg-gray-100 flex-shrink-0 flex items-center justify-center">
+                  {image.file.type.startsWith('video/') ? (
+                    <div className="text-gray-400 flex flex-col items-center">
+                      <span className="text-xs font-bold uppercase">Video</span>
+                    </div>
+                  ) : (
+                    <img
+                      src={image.preview}
+                      alt={image.file.name}
+                      className="w-full h-full object-cover"
+                    />
+                  )}
                 </div>
 
                 {/* Info */}
