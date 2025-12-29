@@ -11,7 +11,7 @@ import json
 import time
 import hashlib
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 import io
 import asyncio
 
@@ -383,13 +383,47 @@ async def run_sync_drive(background_tasks: BackgroundTasks):
         print(f"Sync failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def process_image_for_serving(content: bytes, is_thumbnail: bool = False) -> bytes:
+    """Process image bytes to fix orientation, color space, and optionally resize."""
+    try:
+        img = Image.open(io.BytesIO(content))
+        original_mode = img.mode
+        
+        # 1. Fix orientation based on EXIF
+        img = ImageOps.exif_transpose(img)
+        
+        # 2. Handle color space
+        if original_mode == "CMYK":
+            # CMYK JPEGs often appear inverted when converted directly to RGB
+            # A common fix is to convert to RGB and then invert
+            img = img.convert("RGB")
+            img = ImageOps.invert(img)
+        elif img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+            
+        # 3. Resize if thumbnail
+        if is_thumbnail:
+            img.thumbnail((400, 400))
+            
+        # 4. Save to bytes
+        img_io = io.BytesIO()
+        img.save(img_io, format="JPEG", quality=85 if is_thumbnail else 95)
+        return img_io.getvalue()
+    except Exception as e:
+        print(f"Image processing failed: {e}")
+        return content # Fallback to original content
+
 @app.get("/api/drive-image/{file_id}")
 async def get_drive_image(file_id: str):
     """Serve image from Google Drive"""
     try:
         content = await run_in_threadpool(drive_client.download_file, file_id)
-        return Response(content=content, media_type="image/jpeg") 
+        processed_content = await run_in_threadpool(process_image_for_serving, content)
+        return Response(content=processed_content, media_type="image/jpeg") 
     except Exception as e:
+        print(f"Error serving image {file_id}: {e}")
         raise HTTPException(status_code=404, detail="Image not found")
 
 @app.get("/api/drive-image-thumbnail/{file_id}")
@@ -404,19 +438,10 @@ async def get_drive_image_thumbnail(file_id: str):
         # Download original
         content = await run_in_threadpool(drive_client.download_file, file_id)
         
-        # Create thumbnail
-        img = Image.open(io.BytesIO(content))
-        # Convert to RGB if necessary (for PNG/RGBA)
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-            
-        img.thumbnail((400, 400)) # Max size for gallery grid
+        # Process image
+        thumb_bytes = await run_in_threadpool(process_image_for_serving, content, True)
         
         # Save to cache
-        thumb_io = io.BytesIO()
-        img.save(thumb_io, format="JPEG", quality=85)
-        thumb_bytes = thumb_io.getvalue()
-        
         thumbnail_path.write_bytes(thumb_bytes)
         
         return Response(content=thumb_bytes, media_type="image/jpeg")
