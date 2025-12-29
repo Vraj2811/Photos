@@ -18,8 +18,8 @@ export const searchImages = async (query: string, topK: number = 5): Promise<Sea
   return response.data
 }
 
-export const getAllImages = async (limit: number = 50): Promise<ImageInfo[]> => {
-  const response = await api.get('/api/images', { params: { limit } })
+export const getAllImages = async (limit: number = 50, offset: number = 0): Promise<ImageInfo[]> => {
+  const response = await api.get('/api/images', { params: { limit, offset } })
   return response.data
 }
 
@@ -55,7 +55,7 @@ export const getFaceGroups = async (): Promise<FaceGroupInfo[]> => {
   return response.data
 }
 
-export const getFaceGroupImages = async (groupId: number): Promise<ImageInfo[]> => {
-  const response = await api.get(`/api/face-groups/${groupId}`)
+export const getFaceGroupImages = async (groupId: number, limit: number = 50, offset: number = 0): Promise<ImageInfo[]> => {
+  const response = await api.get(`/api/face-groups/${groupId}`, { params: { limit, offset } })
   return response.data
 }

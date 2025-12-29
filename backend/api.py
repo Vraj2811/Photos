@@ -13,9 +13,10 @@ import hashlib
 import numpy as np
 from PIL import Image
 import io
+import asyncio
 
 from config import (
-    DATABASE_PATH, DRIVE_FOLDER_ID, SERVICE_ACCOUNT_DIR
+    DATABASE_PATH, DRIVE_FOLDER_ID, SERVICE_ACCOUNT_DIR, THUMBNAIL_CACHE_DIR
 )
 from models import (
     SearchQuery, SearchResult, ImageInfo, SystemStatus, VectorStats,
@@ -32,6 +33,9 @@ ollama_proc = OllamaProcessor()
 vector_db = VectorDB()
 face_proc = FaceProcessor(db)
 drive_client = DriveClient(str(SERVICE_ACCOUNT_DIR))
+
+# Ensure thumbnail cache directory exists
+THUMBNAIL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Create FastAPI app
 app = FastAPI(
@@ -96,31 +100,35 @@ async def search_images(query: SearchQuery):
                 filename=img.filename,
                 description=img.description or "",
                 confidence=result['confidence'],
-                image_url=f"/api/drive-image/{img.drive_file_id}" if img.drive_file_id else f"/images/{img.filename}"
+                image_url=f"/api/drive-image/{img.drive_file_id}" if img.drive_file_id else f"/images/{img.filename}",
+                thumbnail_url=f"/api/drive-image-thumbnail/{img.drive_file_id}" if img.drive_file_id else None
             ))
     
     return results
 
 @app.get("/api/images", response_model=List[ImageInfo])
-async def get_all_images(limit: int = Query(50, le=200)):
-    """Get all images (excluding videos)"""
-    all_images = db.get_all_images()
+async def get_all_images(limit: int = Query(50, le=200), offset: int = Query(0, ge=0)):
+    """Get all images (excluding videos) with pagination"""
+    # Note: Filtering videos in memory after fetching from DB is inefficient for large datasets.
+    # However, for now we'll keep the logic and just add pagination to the DB call.
+    # A better way would be to add a 'type' column to the database.
     
-    # Filter out videos
-    video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.webm'}
-    filtered_images = [
-        img for img in all_images 
-        if not any(img.filename.lower().endswith(ext) for ext in video_extensions)
-    ]
+    all_images = db.get_all_images(limit=limit, offset=offset)
     
     results = []
-    for img in filtered_images[:limit]:
+    for img in all_images:
+        # Filter out videos
+        video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.webm'}
+        if any(img.filename.lower().endswith(ext) for ext in video_extensions):
+            continue
+            
         results.append(ImageInfo(
             id=img.id,
             filename=img.filename,
             description=img.description or "",
             created_at=img.created_at.isoformat() if img.created_at else "",
-            image_url=f"/api/drive-image/{img.drive_file_id}" if img.drive_file_id else f"/images/{img.filename}"
+            image_url=f"/api/drive-image/{img.drive_file_id}" if img.drive_file_id else f"/images/{img.filename}",
+            thumbnail_url=f"/api/drive-image-thumbnail/{img.drive_file_id}" if img.drive_file_id else None
         ))
     
     return results
@@ -137,7 +145,8 @@ async def get_image(image_id: int):
         filename=img.filename,
         description=img.description or "",
         created_at=img.created_at.isoformat() if img.created_at else "",
-        image_url=f"/api/drive-image/{img.drive_file_id}" if img.drive_file_id else f"/images/{img.filename}"
+        image_url=f"/api/drive-image/{img.drive_file_id}" if img.drive_file_id else f"/images/{img.filename}",
+        thumbnail_url=f"/api/drive-image-thumbnail/{img.drive_file_id}" if img.drive_file_id else None
     )
 
 @app.delete("/api/images/{image_id}")
@@ -210,7 +219,11 @@ async def upload_image(background_tasks: BackgroundTasks, file: UploadFile = Fil
         drive_file_id = await run_in_threadpool(drive_client.upload_file, filename, contents, DRIVE_FOLDER_ID, content_type or 'application/octet-stream')
         
         if not drive_file_id:
-             raise HTTPException(status_code=500, detail="Failed to upload to Drive")
+             print(f"Upload failed for {filename}. Skipping database entry.")
+             return {
+                 "success": False, 
+                 "error": "Failed to upload to Google Drive after multiple attempts. Image not saved."
+             }
         
         # If it's a video, return early and do not add to database
         if is_video:
@@ -236,9 +249,10 @@ async def upload_image(background_tasks: BackgroundTasks, file: UploadFile = Fil
         if embedding is not None:
             vector_db.add_vector(embedding, image_id)
         
-        # Process faces asynchronously
-        print(f"Queueing face processing for {filename}...")
+        # Process faces and generate thumbnail asynchronously
+        print(f"Queueing background tasks for {filename}...")
         background_tasks.add_task(face_proc.process_image, contents, image_id)
+        background_tasks.add_task(get_drive_image_thumbnail, drive_file_id)
         
         return {
             "success": True,
@@ -305,14 +319,14 @@ async def rebuild_index():
 @app.post("/api/sync-drive")
 async def sync_drive(background_tasks: BackgroundTasks):
     """Sync images from Google Drive"""
-    background_tasks.add_task(run_sync_drive)
+    background_tasks.add_task(run_sync_drive, background_tasks)
     return {"success": True, "message": "Sync started in background"}
 
-def run_sync_drive():
+async def run_sync_drive(background_tasks: BackgroundTasks):
     """Internal function for background sync"""
     try:
         print(f"Syncing from Drive Folder: {DRIVE_FOLDER_ID}")
-        files = drive_client.list_images_in_folder(DRIVE_FOLDER_ID)
+        files = await run_in_threadpool(drive_client.list_images_in_folder, DRIVE_FOLDER_ID)
         print(f"Found {len(files)} images in Drive")
         
         count = 0
@@ -327,7 +341,7 @@ def run_sync_drive():
             print(f"Processing {filename} ({file_id})...")
             
             # Download content
-            content = drive_client.download_file(file_id)
+            content = await run_in_threadpool(drive_client.download_file, file_id)
             
             # Generate description
             description = None
@@ -335,10 +349,10 @@ def run_sync_drive():
             
             try:
                 # Ollama accepts bytes directly in 'images' list
-                description = ollama_proc.generate_description(content)
+                description = await run_in_threadpool(ollama_proc.generate_description, content)
                 if description:
                     # Generate embedding
-                    embedding = ollama_proc.generate_embedding(description)
+                    embedding = await run_in_threadpool(ollama_proc.generate_embedding, description)
             except Exception as e:
                 print(f"AI processing failed for {filename}: {e}")
                 description = "Image from Google Drive (AI processing skipped)"
@@ -351,10 +365,17 @@ def run_sync_drive():
                 
                 # Process faces
                 print(f"Processing faces for {filename}...")
-                face_proc.process_image(content, image_id)
+                background_tasks.add_task(face_proc.process_image, content, image_id)
+                
+                # Pre-generate thumbnail
+                print(f"Pre-generating thumbnail for {filename}...")
+                await get_drive_image_thumbnail(file_id)
                 
                 count += 1
                 print(f"Added {filename}")
+        
+        # After sync, ensure all images have thumbnails
+        background_tasks.add_task(generate_all_missing_thumbnails)
         
         return {"success": True, "count": count}
             
@@ -370,6 +391,71 @@ async def get_drive_image(file_id: str):
         return Response(content=content, media_type="image/jpeg") 
     except Exception as e:
         raise HTTPException(status_code=404, detail="Image not found")
+
+@app.get("/api/drive-image-thumbnail/{file_id}")
+async def get_drive_image_thumbnail(file_id: str):
+    """Serve thumbnail from Google Drive (with local caching)"""
+    thumbnail_path = THUMBNAIL_CACHE_DIR / f"{file_id}_thumb.jpg"
+    
+    if thumbnail_path.exists():
+        return Response(content=thumbnail_path.read_bytes(), media_type="image/jpeg")
+    
+    try:
+        # Download original
+        content = await run_in_threadpool(drive_client.download_file, file_id)
+        
+        # Create thumbnail
+        img = Image.open(io.BytesIO(content))
+        # Convert to RGB if necessary (for PNG/RGBA)
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+            
+        img.thumbnail((400, 400)) # Max size for gallery grid
+        
+        # Save to cache
+        thumb_io = io.BytesIO()
+        img.save(thumb_io, format="JPEG", quality=85)
+        thumb_bytes = thumb_io.getvalue()
+        
+        thumbnail_path.write_bytes(thumb_bytes)
+        
+        return Response(content=thumb_bytes, media_type="image/jpeg")
+    except Exception as e:
+        print(f"Thumbnail generation failed for {file_id}: {e}")
+        # If it's a 404, we should probably return a 404
+        if "File not found" in str(e) or "404" in str(e):
+             raise HTTPException(status_code=404, detail="Image not found on Drive")
+             
+        # Fallback to original if thumbnail fails for other reasons
+        try:
+            content = await run_in_threadpool(drive_client.download_file, file_id)
+            return Response(content=content, media_type="image/jpeg")
+        except:
+            raise HTTPException(status_code=404, detail="Image not found")
+
+async def generate_all_missing_thumbnails():
+    """Background task to generate thumbnails for all images that don't have them."""
+    print("Starting background thumbnail generation...")
+    all_images = db.get_all_images()
+    count = 0
+    for img in all_images:
+        if img.drive_file_id:
+            thumbnail_path = THUMBNAIL_CACHE_DIR / f"{img.drive_file_id}_thumb.jpg"
+            if not thumbnail_path.exists():
+                try:
+                    await get_drive_image_thumbnail(img.drive_file_id)
+                    count += 1
+                    if count % 10 == 0:
+                        print(f"Generated {count} thumbnails...")
+                except Exception as e:
+                    print(f"Failed to generate thumbnail for {img.drive_file_id}: {e}")
+    print(f"Finished background thumbnail generation. Generated {count} thumbnails.")
+
+@app.on_event("startup")
+async def startup_event():
+    """Run tasks on startup"""
+    # Start background thumbnail generation
+    asyncio.create_task(generate_all_missing_thumbnails())
 
 @app.get("/api/face-groups", response_model=List[FaceGroupInfo])
 async def get_face_groups():
@@ -390,22 +476,25 @@ async def get_face_groups():
             id=group.id,
             name=group.name,
             image_count=len(faces),
-            representative_image_url=f"/api/drive-image/{img.drive_file_id}" if img and img.drive_file_id else None
+            representative_image_url=f"/api/drive-image-thumbnail/{img.drive_file_id}" if img and img.drive_file_id else None
         ))
         
     return results
 
 @app.get("/api/face-groups/{group_id}", response_model=List[ImageInfo])
-async def get_face_group_images(group_id: int):
-    """Get all images in a face group"""
+async def get_face_group_images(group_id: int, limit: int = Query(50, le=200), offset: int = Query(0, ge=0)):
+    """Get all images in a face group with pagination"""
     faces = db.get_faces_by_group(group_id)
     if not faces:
         raise HTTPException(status_code=404, detail="Group not found or empty")
         
-    image_ids = list(set(face.image_id for face in faces))
-    results = []
+    image_ids = sorted(list(set(face.image_id for face in faces)), reverse=True)
     
-    for img_id in image_ids:
+    # Apply pagination to image_ids
+    paginated_ids = image_ids[offset : offset + limit]
+    
+    results = []
+    for img_id in paginated_ids:
         img = db.get_image_by_id(img_id)
         if img:
             results.append(ImageInfo(
@@ -413,7 +502,8 @@ async def get_face_group_images(group_id: int):
                 filename=img.filename,
                 description=img.description or "",
                 created_at=img.created_at.isoformat() if img.created_at else "",
-                image_url=f"/api/drive-image/{img.drive_file_id}" if img and img.drive_file_id else f"/images/{img.filename}"
+                image_url=f"/api/drive-image/{img.drive_file_id}" if img and img.drive_file_id else f"/images/{img.filename}",
+                thumbnail_url=f"/api/drive-image-thumbnail/{img.drive_file_id}" if img and img.drive_file_id else None
             ))
             
     return results

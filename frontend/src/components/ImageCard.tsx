@@ -1,3 +1,6 @@
+import { useState } from 'react'
+import { ImageOff } from 'lucide-react'
+
 interface ImageCardProps {
   imageUrl: string
   description: string
@@ -7,6 +10,8 @@ interface ImageCardProps {
 }
 
 export default function ImageCard({ imageUrl, description, confidence, filename, onClick }: ImageCardProps) {
+  const [error, setError] = useState(false)
+
   const getConfidenceBadge = (score: number) => {
     if (score >= 0.8) return { label: 'Excellent', color: 'bg-green-500' }
     if (score >= 0.6) return { label: 'Good', color: 'bg-blue-500' }
@@ -22,13 +27,21 @@ export default function ImageCard({ imageUrl, description, confidence, filename,
       className="group bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-2xl transition-all duration-300 hover:scale-105 cursor-pointer"
     >
       {/* Image */}
-      <div className="relative aspect-video overflow-hidden bg-gray-100">
-        <img
-          src={imageUrl}
-          alt={description}
-          className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
-          loading="lazy"
-        />
+      <div className="relative aspect-video overflow-hidden bg-gray-100 flex items-center justify-center">
+        {error ? (
+          <div className="flex flex-col items-center text-gray-400 p-4">
+            <ImageOff className="w-8 h-8 mb-2" />
+            <span className="text-xs text-center">Image unavailable</span>
+          </div>
+        ) : (
+          <img
+            src={imageUrl}
+            alt={description}
+            onError={() => setError(true)}
+            className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
+            loading="lazy"
+          />
+        )}
         {badge && (
           <div className={`absolute top-3 right-3 ${badge.color} text-white px-3 py-1 rounded-full text-xs font-semibold shadow-lg`}>
             {badge.label} {(confidence! * 100).toFixed(0)}%

@@ -11,3 +11,4 @@ EMBEDDING_DIMENSION = 768
 DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 DRIVE_FOLDER_ID = "1GJ1Bl35jOKckFSoZb4b3Ube5VBxfKvH-"
 SERVICE_ACCOUNT_DIR = PROJECT_ROOT / "Service Account Utility" / "accounts"
+THUMBNAIL_CACHE_DIR = PROJECT_ROOT / "backend" / "thumbnails"

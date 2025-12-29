@@ -40,10 +40,15 @@ class ImageDB:
         finally:
             session.close()
     
-    def get_all_images(self):
+    def get_all_images(self, limit=None, offset=None):
         session = self.SessionLocal()
         try:
-            return session.query(ImageRecord).order_by(ImageRecord.created_at.desc()).all()
+            query = session.query(ImageRecord).order_by(ImageRecord.created_at.desc())
+            if offset is not None:
+                query = query.offset(offset)
+            if limit is not None:
+                query = query.limit(limit)
+            return query.all()
         finally:
             session.close()
     

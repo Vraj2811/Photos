@@ -4,7 +4,10 @@ from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 import io
 import os
 import json
+import time
 from pathlib import Path
+
+import threading
 
 SCOPES = ['https://www.googleapis.com/auth/drive']
 
@@ -13,7 +16,7 @@ class DriveClient:
         self.service_account_path = Path(service_account_path)
         self.accounts = []
         self.current_account_index = 0
-        self.service = None
+        self._thread_local = threading.local()
         
         if self.service_account_path.is_dir():
             # Load all JSON files from directory
@@ -24,24 +27,29 @@ class DriveClient:
         else:
             # Single file
             self.accounts = [self.service_account_path]
-            
-        self._load_account(0)
+
+    @property
+    def service(self):
+        """Get or create a thread-local service object."""
+        if not hasattr(self._thread_local, 'service'):
+            self._load_account(self.current_account_index)
+        return self._thread_local.service
 
     def _load_account(self, index):
-        """Load service account at specific index."""
+        """Load service account at specific index for the current thread."""
         if index >= len(self.accounts):
             index = 0 # Loop back to start
         
         self.current_account_index = index
         account_file = self.accounts[index]
-        print(f"Switching to service account: {account_file.name}")
+        print(f"Thread {threading.get_ident()} switching to service account: {account_file.name}")
         
-        self.creds = service_account.Credentials.from_service_account_file(
+        creds = service_account.Credentials.from_service_account_file(
             str(account_file), scopes=SCOPES)
-        self.service = build('drive', 'v3', credentials=self.creds)
+        self._thread_local.service = build('drive', 'v3', credentials=creds, cache_discovery=False)
 
     def _rotate_account(self):
-        """Switch to the next available service account."""
+        """Switch to the next available service account for the current thread."""
         next_index = (self.current_account_index + 1) % len(self.accounts)
         self._load_account(next_index)
 
@@ -84,27 +92,31 @@ class DriveClient:
         return results
 
     def download_file(self, file_id):
-        """Download file content as bytes."""
-        try:
-            request = self.service.files().get_media(fileId=file_id)
-            fh = io.BytesIO()
-            downloader = MediaIoBaseDownload(fh, request)
-            done = False
-            while done is False:
-                status, done = downloader.next_chunk()
-            return fh.getvalue()
-        except Exception as e:
-            print(f"Download failed: {e}")
-            raise e
+        """Download file content as bytes with retries."""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                request = self.service.files().get_media(fileId=file_id)
+                fh = io.BytesIO()
+                downloader = MediaIoBaseDownload(fh, request, chunksize=1024*1024) # 1MB chunks
+                done = False
+                while done is False:
+                    status, done = downloader.next_chunk()
+                return fh.getvalue()
+            except Exception as e:
+                print(f"Download attempt {attempt + 1} failed for {file_id}: {e}")
+                if attempt == max_retries - 1:
+                    raise e
+                time.sleep(1) # Wait before retry
 
     def upload_file(self, filename, file_content, folder_id, mime_type='image/jpeg'):
-        """Upload a file to Google Drive with rotation support."""
-        max_retries = len(self.accounts)
+        """Upload a file to Google Drive with rotation support and max 2 retries."""
+        max_attempts = 3
         attempts = 0
         
-        while attempts < max_retries:
+        while attempts < max_attempts:
             try:
-                # Check quota first (optional, but good practice)
+                # Check quota first
                 usage, limit = self.get_storage_quota()
                 if limit > 0 and usage >= (limit - 10 * 1024 * 1024): # Leave 10MB buffer
                     print(f"Account {self.accounts[self.current_account_index].name} is full. Rotating...")
@@ -120,19 +132,20 @@ class DriveClient:
                 file = self.service.files().create(body=file_metadata, media_body=media, fields='id').execute()
                 return file.get('id')
             except Exception as e:
-                print(f"Upload failed with account {self.accounts[self.current_account_index].name}: {e}")
-                if "storageQuotaExceeded" in str(e):
-                    print("Quota exceeded. Rotating account...")
-                    self._rotate_account()
-                    attempts += 1
+                attempts += 1
+                print(f"Upload attempt {attempts} failed with account {self.accounts[self.current_account_index].name}: {e}")
+                
+                if attempts < max_attempts:
+                    if "storageQuotaExceeded" in str(e):
+                        print("Quota exceeded. Rotating account and retrying...")
+                        self._rotate_account()
+                    else:
+                        print("Retrying with next account...")
+                        self._rotate_account()
+                    time.sleep(1)
                 else:
-                    # If it's not a quota error, it might be something else. 
-                    # But we can try rotating anyway just in case.
-                    print("Retrying with next account...")
-                    self._rotate_account()
-                    attempts += 1
+                    print(f"All {max_attempts} upload attempts failed.")
         
-        print("All accounts failed to upload.")
         return None
 
     def get_file_metadata(self, file_id):

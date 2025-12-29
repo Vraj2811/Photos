@@ -12,6 +12,7 @@ export interface SearchResult {
   description: string
   confidence: number
   image_url: string
+  thumbnail_url?: string
 }
 
 export interface ImageInfo {
@@ -20,6 +21,7 @@ export interface ImageInfo {
   description: string
   created_at: string
   image_url: string
+  thumbnail_url?: string
 }
 
 export interface UploadResponse {
