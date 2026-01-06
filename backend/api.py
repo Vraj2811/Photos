@@ -415,6 +415,77 @@ def process_image_for_serving(content: bytes, is_thumbnail: bool = False) -> byt
         print(f"Image processing failed: {e}")
         return content # Fallback to original content
 
+def crop_face(image_bytes: bytes, bbox: List[float]) -> bytes:
+    """Crop face from image bytes using bounding box [x1, y1, x2, y2]."""
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        img = ImageOps.exif_transpose(img) # Fix orientation before cropping
+        
+        # Convert to RGB if needed
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+            
+        # Bounding box is [x1, y1, x2, y2]
+        # Add some padding (20%)
+        x1, y1, x2, y2 = bbox
+        w = x2 - x1
+        h = y2 - y1
+        
+        padding_w = w * 0.2
+        padding_h = h * 0.2
+        
+        # New coordinates with padding
+        nx1 = max(0, x1 - padding_w)
+        ny1 = max(0, y1 - padding_h)
+        nx2 = min(img.width, x2 + padding_w)
+        ny2 = min(img.height, y2 + padding_h)
+        
+        face_img = img.crop((nx1, ny1, nx2, ny2))
+        
+        # Resize to a standard size for profile photos
+        face_img.thumbnail((300, 300))
+        
+        img_io = io.BytesIO()
+        face_img.save(img_io, format="JPEG", quality=90)
+        return img_io.getvalue()
+    except Exception as e:
+        print(f"Face cropping failed: {e}")
+        return image_bytes
+
+@app.get("/api/face-thumbnail/{face_id}")
+async def get_face_thumbnail(face_id: int):
+    """Serve zoomed-in face thumbnail"""
+    thumbnail_path = THUMBNAIL_CACHE_DIR / f"face_{face_id}.jpg"
+    
+    if thumbnail_path.exists():
+        return Response(content=thumbnail_path.read_bytes(), media_type="image/jpeg")
+    
+    try:
+        face = db.get_face_by_id(face_id)
+        if not face:
+            raise HTTPException(status_code=404, detail="Face record not found")
+            
+        img_record = db.get_image_by_id(face.image_id)
+        if not img_record or not img_record.drive_file_id:
+            raise HTTPException(status_code=404, detail="Original image not found")
+            
+        # Download original
+        content = await run_in_threadpool(drive_client.download_file, img_record.drive_file_id)
+        
+        # Parse bbox
+        bbox = json.loads(face.bbox)
+        
+        # Crop face
+        face_bytes = await run_in_threadpool(crop_face, content, bbox)
+        
+        # Save to cache
+        thumbnail_path.write_bytes(face_bytes)
+        
+        return Response(content=face_bytes, media_type="image/jpeg")
+    except Exception as e:
+        print(f"Face thumbnail generation failed for {face_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/drive-image/{file_id}")
 async def get_drive_image(file_id: str):
     """Serve image from Google Drive"""
@@ -493,15 +564,14 @@ async def get_face_groups():
         if not faces:
             continue
             
-        # Use the first face's image as representative
+        # Use the first face's ID to generate a zoomed face thumbnail
         rep_face = faces[0]
-        img = db.get_image_by_id(rep_face.image_id)
         
         results.append(FaceGroupInfo(
             id=group.id,
             name=group.name,
             image_count=len(faces),
-            representative_image_url=f"/api/drive-image-thumbnail/{img.drive_file_id}" if img and img.drive_file_id else None
+            representative_image_url=f"/api/face-thumbnail/{rep_face.id}"
         ))
         
     return results

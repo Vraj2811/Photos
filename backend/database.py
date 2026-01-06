@@ -132,3 +132,10 @@ class ImageDB:
             return session.query(DetectedFace).filter(DetectedFace.group_id == group_id).all()
         finally:
             session.close()
+
+    def get_face_by_id(self, face_id):
+        session = self.SessionLocal()
+        try:
+            return session.query(DetectedFace).filter(DetectedFace.id == face_id).first()
+        finally:
+            session.close()
