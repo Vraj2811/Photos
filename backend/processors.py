@@ -75,8 +75,8 @@ class OllamaProcessor:
 
 class FaceProcessor:
     def __init__(self, db):
-        print("Initializing FaceAnalysis(name='buffalo_l')...")
-        self.app = FaceAnalysis(name="buffalo_l", providers=['CPUExecutionProvider'])
+        print("Initializing FaceAnalysis(name='antelopev2')...")
+        self.app = FaceAnalysis(name="antelopev2", providers=['CPUExecutionProvider'])
         self.app.prepare(ctx_id=0, det_size=(640, 640))
         self.similarity_threshold = 0.6
         self.db = db
@@ -114,16 +114,21 @@ class FaceProcessor:
             print(f"Face processing failed for image {image_id}: {e}")
 
     def find_matching_group(self, face_embedding):
+        face_embedding = normalize(face_embedding)
+
         groups = self.db.get_all_face_groups()
         best_match_id = None
         best_similarity = -1
-        
+
         for group in groups:
-            group_embedding = np.array(json.loads(group.representative_embedding), dtype=np.float32)
+            group_embedding = normalize(
+                json.loads(group.representative_embedding)
+            )
+
             similarity = np.dot(face_embedding, group_embedding)
-            
+
             if similarity > self.similarity_threshold and similarity > best_similarity:
                 best_similarity = similarity
                 best_match_id = group.id
-                
+
         return best_match_id

@@ -5,6 +5,7 @@ import io
 import os
 import json
 import time
+import re
 from pathlib import Path
 
 import threading
@@ -20,7 +21,11 @@ class DriveClient:
         
         if self.service_account_path.is_dir():
             # Load all JSON files from directory
-            self.accounts = sorted(list(self.service_account_path.glob("*.json")))
+            def natural_sort_key(s):
+                return [int(text) if text.isdigit() else text.lower()
+                        for text in re.split('([0-9]+)', str(s))]
+            
+            self.accounts = sorted(list(self.service_account_path.glob("*.json")), key=natural_sort_key)
             if not self.accounts:
                 raise Exception(f"No service account files found in {service_account_path}")
             print(f"Found {len(self.accounts)} service accounts.")
