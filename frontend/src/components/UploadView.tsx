@@ -1,34 +1,14 @@
-import { useState, useCallback } from 'react'
+import { useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { Upload, CheckCircle, XCircle, Loader2, Image as ImageIcon } from 'lucide-react'
-import { uploadImage } from '../api'
+import { useUploads } from '../UploadContext'
 
-interface UploadViewProps {
-  onUploadSuccess: () => void
-}
-
-interface UploadedImage {
-  file: File
-  preview: string
-  status: 'pending' | 'uploading' | 'success' | 'error'
-  description?: string
-  error?: string
-}
-
-export default function UploadView({ onUploadSuccess }: UploadViewProps) {
-  const [images, setImages] = useState<UploadedImage[]>([])
+export default function UploadView() {
+  const { uploads, addUploads, clearCompleted } = useUploads();
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
-    const newImages = acceptedFiles.map(file => ({
-      file,
-      preview: URL.createObjectURL(file),
-      status: 'pending' as const
-    }))
-    setImages(prev => [...prev, ...newImages])
-
-    // Auto-upload
-    newImages.forEach(img => handleUpload(img))
-  }, [])
+    addUploads(acceptedFiles);
+  }, [addUploads])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -39,45 +19,14 @@ export default function UploadView({ onUploadSuccess }: UploadViewProps) {
     multiple: true
   })
 
-  const handleUpload = async (image: UploadedImage) => {
-    setImages(prev => prev.map(img =>
-      img.preview === image.preview ? { ...img, status: 'uploading' } : img
-    ))
-
-    try {
-      const result = await uploadImage(image.file)
-
-      if (result.success) {
-        setImages(prev => prev.map(img =>
-          img.preview === image.preview
-            ? { ...img, status: 'success', description: result.description }
-            : img
-        ))
-        onUploadSuccess()
-      } else {
-        throw new Error(result.error || 'Upload failed')
-      }
-    } catch (error: any) {
-      setImages(prev => prev.map(img =>
-        img.preview === image.preview
-          ? { ...img, status: 'error', error: error.message }
-          : img
-      ))
-    }
-  }
-
-  const clearCompleted = () => {
-    setImages(prev => prev.filter(img => img.status !== 'success'))
-  }
-
   return (
     <div className="glass rounded-2xl shadow-2xl p-6 md:p-8">
       {/* Dropzone */}
       <div
         {...getRootProps()}
         className={`border-3 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all duration-200 ${isDragActive
-            ? 'border-indigo-500 bg-indigo-50'
-            : 'border-gray-300 hover:border-indigo-400 hover:bg-gray-50'
+          ? 'border-indigo-500 bg-indigo-50'
+          : 'border-gray-300 hover:border-indigo-400 hover:bg-gray-50'
           }`}
       >
         <input {...getInputProps()} />
@@ -100,11 +49,11 @@ export default function UploadView({ onUploadSuccess }: UploadViewProps) {
       </div>
 
       {/* Upload Queue */}
-      {images.length > 0 && (
+      {uploads.length > 0 && (
         <div className="mt-8">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-xl font-bold text-gray-800">
-              Upload Queue ({images.length})
+              Upload Queue ({uploads.length})
             </h3>
             <button
               onClick={clearCompleted}
@@ -115,7 +64,7 @@ export default function UploadView({ onUploadSuccess }: UploadViewProps) {
           </div>
 
           <div className="space-y-4">
-            {images.map((image, idx) => (
+            {uploads.map((image, idx) => (
               <div
                 key={idx}
                 className="bg-white rounded-xl p-4 shadow-md flex items-center gap-4"

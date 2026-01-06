@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Search, Upload, Image as ImageIcon, Activity, Sparkles, Users } from 'lucide-react'
+import { Search, Upload, Image as ImageIcon, Activity, Sparkles, Users, Loader2, CheckCircle, XCircle } from 'lucide-react'
 import SearchView from './components/SearchView'
 import UploadView from './components/UploadView'
 import GalleryView from './components/GalleryView'
@@ -9,10 +9,75 @@ import ImageModal from './components/ImageModal'
 import StatusBar from './components/StatusBar'
 import { getStatus, deleteImage as apiDeleteImage } from './api'
 import type { SystemStatus, ImageInfo } from './types'
+import { UploadProvider, useUploads } from './UploadContext'
 
 type View = 'search' | 'upload' | 'gallery' | 'people' | 'face-group'
 
-function App() {
+function GlobalUploadProgress() {
+  const { uploads, isUploading, clearCompleted } = useUploads();
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  if (uploads.length === 0) return null;
+
+  const successCount = uploads.filter(u => u.status === 'success').length;
+  const totalCount = uploads.length;
+
+  return (
+    <div className={`fixed bottom-6 right-6 z-50 transition-all duration-300 ${isExpanded ? 'w-80' : 'w-64'}`}>
+      <div className="glass rounded-2xl shadow-2xl overflow-hidden border border-indigo-100">
+        <div
+          className="bg-gradient-to-r from-indigo-600 to-purple-600 p-3 flex items-center justify-between cursor-pointer"
+          onClick={() => setIsExpanded(!isExpanded)}
+        >
+          <div className="flex items-center gap-2 text-white">
+            {isUploading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <CheckCircle className="w-4 h-4" />
+            )}
+            <span className="text-sm font-medium">
+              {isUploading ? 'Uploading...' : 'Uploads Complete'}
+            </span>
+          </div>
+          <span className="text-xs text-white opacity-80">
+            {successCount}/{totalCount}
+          </span>
+        </div>
+
+        {isExpanded && (
+          <div className="max-h-64 overflow-y-auto p-2 space-y-2 bg-white/80 backdrop-blur-sm">
+            {uploads.map((upload, idx) => (
+              <div key={idx} className="flex items-center gap-2 p-2 rounded-lg bg-white/50 text-xs">
+                <img src={upload.preview} className="w-8 h-8 rounded object-cover" alt="" />
+                <div className="flex-1 min-w-0">
+                  <p className="truncate font-medium text-gray-700">{upload.file.name}</p>
+                  <p className={`text-[10px] ${upload.status === 'success' ? 'text-green-600' :
+                    upload.status === 'error' ? 'text-red-600' : 'text-indigo-600'
+                    }`}>
+                    {upload.status.charAt(0).toUpperCase() + upload.status.slice(1)}
+                  </p>
+                </div>
+                {upload.status === 'uploading' && <Loader2 className="w-3 h-3 animate-spin text-indigo-600" />}
+                {upload.status === 'success' && <CheckCircle className="w-3 h-3 text-green-500" />}
+                {upload.status === 'error' && <XCircle className="w-3 h-3 text-red-500" />}
+              </div>
+            ))}
+            {!isUploading && (
+              <button
+                onClick={(e) => { e.stopPropagation(); clearCompleted(); }}
+                className="w-full py-2 text-xs text-indigo-600 hover:text-indigo-800 font-medium border-t border-gray-100"
+              >
+                Clear Completed
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AppContent() {
   const [currentView, setCurrentView] = useState<View>('search')
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null)
   const [selectedImage, setSelectedImage] = useState<ImageInfo | null>(null)
@@ -54,8 +119,6 @@ function App() {
       setSelectedImage(null)
       setRefreshTrigger(prev => prev + 1)
       loadStatus() // Refresh status to update counts
-      // Note: Individual views will need to refresh their own data if they are active
-      // We can use a simple event or just let them refresh on mount
     } catch (err: any) {
       alert('Failed to delete image: ' + (err.response?.data?.detail || err.message))
     } finally {
@@ -141,7 +204,7 @@ function App() {
                   refreshTrigger={refreshTrigger}
                 />
               )}
-              {currentView === 'upload' && <UploadView onUploadSuccess={loadStatus} />}
+              {currentView === 'upload' && <UploadView />}
               {currentView === 'gallery' && (
                 <GalleryView
                   onImageClick={setSelectedImage}
@@ -176,7 +239,17 @@ function App() {
           <p>Built with React, FastAPI, LLaVA & FAISS</p>
         </footer>
       </div>
+
+      <GlobalUploadProgress />
     </div>
+  )
+}
+
+function App() {
+  return (
+    <UploadProvider>
+      <AppContent />
+    </UploadProvider>
   )
 }
 

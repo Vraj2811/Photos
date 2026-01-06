@@ -1,15 +1,16 @@
 import { useState } from 'react'
-import { ImageOff } from 'lucide-react'
+import { ImageOff, Loader2 } from 'lucide-react'
 
 interface ImageCardProps {
   imageUrl: string
   description: string
   confidence?: number
   filename: string
+  isProcessing?: boolean
   onClick?: () => void
 }
 
-export default function ImageCard({ imageUrl, description, confidence, filename, onClick }: ImageCardProps) {
+export default function ImageCard({ imageUrl, description, confidence, filename, isProcessing, onClick }: ImageCardProps) {
   const [error, setError] = useState(false)
 
   const getConfidenceBadge = (score: number) => {
@@ -45,6 +46,14 @@ export default function ImageCard({ imageUrl, description, confidence, filename,
         {badge && (
           <div className={`absolute top-3 right-3 ${badge.color} text-white px-3 py-1 rounded-full text-xs font-semibold shadow-lg`}>
             {badge.label} {(confidence! * 100).toFixed(0)}%
+          </div>
+        )}
+        {isProcessing && (
+          <div className="absolute inset-0 bg-black/20 backdrop-blur-[1px] flex items-center justify-center">
+            <div className="bg-white/90 px-3 py-1.5 rounded-full flex items-center gap-2 shadow-lg">
+              <Loader2 className="w-3 h-3 animate-spin text-indigo-600" />
+              <span className="text-[10px] font-bold text-indigo-900 uppercase tracking-wider">Processing</span>
+            </div>
           </div>
         )}
       </div>

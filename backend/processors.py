@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 import ollama
 import numpy as np
 import base64
@@ -7,6 +9,12 @@ import io
 from PIL import Image
 from insightface.app import FaceAnalysis
 from config import VISION_MODEL, EMBEDDING_MODEL, EMBEDDING_DIMENSION
+
+def normalize(v):
+    norm = np.linalg.norm(v)
+    if norm == 0:
+        return v
+    return v / norm
 
 class OllamaProcessor:
     def __init__(self):

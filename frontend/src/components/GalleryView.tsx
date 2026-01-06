@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Loader2, Image as ImageIcon, RefreshCw } from 'lucide-react'
 import { getAllImages } from '../api'
 import type { ImageInfo } from '../types'
 import ImageCard from './ImageCard'
+import { useUploads } from '../UploadContext'
 
 interface GalleryViewProps {
   onImageClick: (image: ImageInfo) => void
@@ -17,13 +18,17 @@ export default function GalleryView({ onImageClick, refreshTrigger }: GalleryVie
   const [hasMore, setHasMore] = useState(true)
   const [offset, setOffset] = useState(0)
   const PAGE_SIZE = 30
+  const { uploads } = useUploads();
+
+  // Auto-refresh when an upload succeeds
+  const successCount = useMemo(() => uploads.filter(u => u.status === 'success').length, [uploads]);
 
   useEffect(() => {
     setImages([])
     setOffset(0)
     setHasMore(true)
     loadImages(0, true)
-  }, [refreshTrigger])
+  }, [refreshTrigger, successCount])
 
   const loadImages = async (currentOffset: number, isInitial: boolean = false) => {
     if (isInitial) {
