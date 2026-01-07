@@ -62,6 +62,7 @@ async def root():
 @app.get("/api/status", response_model=SystemStatus)
 async def get_status():
     """Get system status"""
+    vector_db.reload_if_needed()
     all_items = db.get_all_images()
     
     # Filter out videos for the count
@@ -79,6 +80,7 @@ async def get_status():
 @app.post("/api/search", response_model=List[SearchResult])
 async def search_images(query: SearchQuery):
     """Search for images"""
+    vector_db.reload_if_needed()
     if vector_db.index.ntotal == 0:
         raise HTTPException(status_code=404, detail="No images in database")
     

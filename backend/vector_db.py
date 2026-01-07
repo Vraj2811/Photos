@@ -1,3 +1,4 @@
+import os
 import faiss
 import json
 import numpy as np
@@ -13,7 +14,18 @@ class VectorDB:
         
         self.index = None
         self.id_mapping = {}
+        self._last_loaded_time = 0
         self.load_or_create_index()
+
+    def reload_if_needed(self):
+        """Reload index if the file on disk has changed"""
+        if not self.index_file.exists():
+            return
+
+        mtime = os.path.getmtime(self.index_file)
+        if mtime > self._last_loaded_time:
+            print(f"Index file changed (mtime={mtime}, last={self._last_loaded_time}). Reloading...")
+            self.load_or_create_index()
 
     
     def load_or_create_index(self):
@@ -23,8 +35,10 @@ class VectorDB:
                 with open(self.mapping_file, 'r') as f:
                     mapping_data = json.load(f)
                     self.id_mapping = {int(k): v for k, v in mapping_data.items()}
-                print(f"Loaded index with {self.index.ntotal} vectors")
-            except:
+                self._last_loaded_time = os.path.getmtime(self.index_file)
+                print(f"Loaded index with {self.index.ntotal} vectors (mtime={self._last_loaded_time})")
+            except Exception as e:
+                print(f"Failed to load index: {e}")
                 self.create_new_index()
         else:
             self.create_new_index()
