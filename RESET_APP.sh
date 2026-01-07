@@ -11,7 +11,6 @@ if [ -f "image_search.db" ]; then
     echo "🗑️  Deleting database..."
     rm image_search.db
 fi
-touch image_search.db
 
 # 2. Clear the uploads folder
 if [ -d "uploads" ]; then
