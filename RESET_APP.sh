@@ -26,14 +26,13 @@ if [ -d "backend/thumbnails" ]; then
 fi
 mkdir -p backend/thumbnails
 
-# 3. Clear the thumbnails folder
+# 4. Clear the thumbnails folder
 if [ -d "backend/__pycache__" ]; then
     echo "🗑️  Clearing thumbnails folder..."
     rm -rf backend/__pycache__
 fi
-mkdir -p backend/__pycache__
 
-# 4. Clear the FAISS indexes folder
+# 5. Clear the FAISS indexes folder
 if [ -d "faiss_indexes" ]; then
     echo "🗑️  Clearing FAISS indexes..."
     rm -rf faiss_indexes
