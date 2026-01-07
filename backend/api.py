@@ -16,7 +16,7 @@ import io
 import asyncio
 
 from config import (
-    DATABASE_PATH, DRIVE_FOLDER_ID, SERVICE_ACCOUNT_DIR, THUMBNAIL_CACHE_DIR
+    DATABASE_PATH, UPLOAD_DIR, THUMBNAIL_CACHE_DIR
 )
 from models import (
     SearchQuery, SearchResult, ImageInfo, SystemStatus, VectorStats,
@@ -25,17 +25,16 @@ from models import (
 from database import ImageDB
 from processors import OllamaProcessor, FaceProcessor
 from vector_db import VectorDB
-from drive_client import DriveClient
 
 # Initialize components
 db = ImageDB()
 ollama_proc = OllamaProcessor()
 vector_db = VectorDB()
 face_proc = FaceProcessor(db)
-drive_client = DriveClient(str(SERVICE_ACCOUNT_DIR))
 
-# Ensure thumbnail cache directory exists
+# Ensure directories exist
 THUMBNAIL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # Create FastAPI app
 app = FastAPI(
@@ -100,8 +99,8 @@ async def search_images(query: SearchQuery):
                 filename=img.filename,
                 description=img.description or "",
                 confidence=result['confidence'],
-                image_url=f"/api/drive-image/{img.drive_file_id}" if img.drive_file_id else f"/images/{img.filename}",
-                thumbnail_url=f"/api/drive-image-thumbnail/{img.drive_file_id}" if img.drive_file_id else None
+                image_url=f"/api/image/{img.id}",
+                thumbnail_url=f"/api/thumbnail/{img.id}"
             ))
     
     return results
@@ -127,8 +126,8 @@ async def get_all_images(limit: int = Query(50, le=200), offset: int = Query(0, 
             filename=img.filename,
             description=img.description or "",
             created_at=img.created_at.isoformat() if img.created_at else "",
-            image_url=f"/api/drive-image/{img.drive_file_id}" if img.drive_file_id else f"/images/{img.filename}",
-            thumbnail_url=f"/api/drive-image-thumbnail/{img.drive_file_id}" if img.drive_file_id else None
+            image_url=f"/api/image/{img.id}",
+            thumbnail_url=f"/api/thumbnail/{img.id}"
         ))
     
     return results
@@ -145,22 +144,29 @@ async def get_image(image_id: int):
         filename=img.filename,
         description=img.description or "",
         created_at=img.created_at.isoformat() if img.created_at else "",
-        image_url=f"/api/drive-image/{img.drive_file_id}" if img.drive_file_id else f"/images/{img.filename}",
-        thumbnail_url=f"/api/drive-image-thumbnail/{img.drive_file_id}" if img.drive_file_id else None
+        image_url=f"/api/image/{img.id}",
+        thumbnail_url=f"/api/thumbnail/{img.id}"
     )
 
 @app.delete("/api/images/{image_id}")
 async def delete_image(image_id: int):
-    """Delete image from DB and Drive"""
+    """Delete image from DB and local storage"""
     img = db.get_image_by_id(image_id)
     if not img:
         raise HTTPException(status_code=404, detail="Image not found")
     
-    # Delete from Drive
-    if img.drive_file_id:
-        print(f"Deleting from Drive: {img.drive_file_id}")
-        drive_client.delete_file(img.drive_file_id)
+    # Delete local file
+    if img.file_path:
+        file_path = Path(img.file_path)
+        if file_path.exists():
+            print(f"Deleting local file: {file_path}")
+            file_path.unlink()
     
+    # Delete thumbnail
+    thumbnail_path = THUMBNAIL_CACHE_DIR / f"{image_id}_thumb.jpg"
+    if thumbnail_path.exists():
+        thumbnail_path.unlink()
+
     # Delete from Vector DB
     vector_db.delete_vector(image_id)
     
@@ -209,40 +215,35 @@ async def upload_image(background_tasks: BackgroundTasks, file: UploadFile = Fil
                 print(f"Generating embedding for {file.filename}...")
                 embedding = await run_in_threadpool(ollama_proc.generate_embedding, description)
 
-        # Generate filename
+        # Generate filename and save locally
         timestamp = int(time.time())
         file_hash = hashlib.md5(contents).hexdigest()[:8]
-        filename = f"{timestamp}_{file_hash}_{file.filename}"
-
-        # Upload to Drive
-        print(f"Uploading {filename} to Drive...")
-        drive_file_id = await run_in_threadpool(drive_client.upload_file, filename, contents, DRIVE_FOLDER_ID, content_type or 'application/octet-stream')
+        ext = Path(file.filename).suffix
+        filename = f"{timestamp}_{file_hash}{ext}"
+        file_path = UPLOAD_DIR / filename
         
-        if not drive_file_id:
-             print(f"Upload failed for {filename}. Skipping database entry.")
-             return {
-                 "success": False, 
-                 "error": "Failed to upload to Google Drive after multiple attempts. Image not saved."
-             }
+        print(f"Saving {filename} to local storage...")
+        with open(file_path, "wb") as f:
+            f.write(contents)
         
         # If it's a video, return early and do not add to database
         if is_video:
-            print(f"Video {filename} uploaded to Drive. Skipping database entry as requested.")
+            print(f"Video {filename} saved locally. Skipping database entry as requested.")
             return {
                 "success": True,
                 "image_id": None,
                 "filename": filename,
                 "description": description,
-                "image_url": f"/api/drive-image/{drive_file_id}",
-                "message": "Video uploaded to Drive (not stored in database)"
+                "image_url": f"/api/image/video/{filename}",
+                "message": "Video uploaded locally (not stored in database)"
             }
 
         # Save to database
         print(f"Saving {filename} to database...")
-        image_id = db.add_image(filename, None, description, embedding, drive_file_id=drive_file_id)
+        image_id = db.add_image(file.filename, str(file_path), description, embedding)
         if not image_id:
-            print(f"Failed to save to DB. Cleaning up Drive file {drive_file_id}...")
-            drive_client.delete_file(drive_file_id)
+            print(f"Failed to save to DB. Cleaning up local file {file_path}...")
+            file_path.unlink()
             return {"success": False, "error": "Failed to save to database"}
         
         # Add to vector index if embedding exists
@@ -252,14 +253,14 @@ async def upload_image(background_tasks: BackgroundTasks, file: UploadFile = Fil
         # Process faces and generate thumbnail asynchronously
         print(f"Queueing background tasks for {filename}...")
         background_tasks.add_task(face_proc.process_image, contents, image_id)
-        background_tasks.add_task(get_drive_image_thumbnail, drive_file_id)
+        background_tasks.add_task(generate_thumbnail, image_id)
         
         return {
             "success": True,
             "image_id": image_id,
-            "filename": filename,
+            "filename": file.filename,
             "description": description,
-            "image_url": f"/api/drive-image/{drive_file_id}"
+            "image_url": f"/api/image/{image_id}"
         }
         
     except Exception as e:
@@ -316,72 +317,7 @@ async def rebuild_index():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/sync-drive")
-async def sync_drive(background_tasks: BackgroundTasks):
-    """Sync images from Google Drive"""
-    background_tasks.add_task(run_sync_drive, background_tasks)
-    return {"success": True, "message": "Sync started in background"}
-
-async def run_sync_drive(background_tasks: BackgroundTasks):
-    """Internal function for background sync"""
-    try:
-        print(f"Syncing from Drive Folder: {DRIVE_FOLDER_ID}")
-        files = await run_in_threadpool(drive_client.list_images_in_folder, DRIVE_FOLDER_ID)
-        print(f"Found {len(files)} images in Drive")
-        
-        count = 0
-        for file in files:
-            file_id = file['id']
-            filename = file['name']
-            
-            # Check if already exists
-            if db.get_image_by_drive_id(file_id):
-                continue
-            
-            print(f"Processing {filename} ({file_id})...")
-            
-            # Download content
-            content = await run_in_threadpool(drive_client.download_file, file_id)
-            
-            # Generate description
-            description = None
-            embedding = None
-            
-            try:
-                # Ollama accepts bytes directly in 'images' list
-                description = await run_in_threadpool(ollama_proc.generate_description, content)
-                if description:
-                    # Generate embedding
-                    embedding = await run_in_threadpool(ollama_proc.generate_embedding, description)
-            except Exception as e:
-                print(f"AI processing failed for {filename}: {e}")
-                description = "Image from Google Drive (AI processing skipped)"
-            
-            # Save to DB even if AI failed
-            image_id = db.add_image(filename, None, description, embedding, drive_file_id=file_id)
-            if image_id:
-                if embedding is not None:
-                    vector_db.add_vector(embedding, image_id)
-                
-                # Process faces
-                print(f"Processing faces for {filename}...")
-                background_tasks.add_task(face_proc.process_image, content, image_id)
-                
-                # Pre-generate thumbnail
-                print(f"Pre-generating thumbnail for {filename}...")
-                await get_drive_image_thumbnail(file_id)
-                
-                count += 1
-                print(f"Added {filename}")
-        
-        # After sync, ensure all images have thumbnails
-        background_tasks.add_task(generate_all_missing_thumbnails)
-        
-        return {"success": True, "count": count}
-            
-    except Exception as e:
-        print(f"Sync failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Removed sync-drive endpoint as it's no longer needed for local storage.
 
 def process_image_for_serving(content: bytes, is_thumbnail: bool = False) -> bytes:
     """Process image bytes to fix orientation, color space, and optionally resize."""
@@ -466,11 +402,14 @@ async def get_face_thumbnail(face_id: int):
             raise HTTPException(status_code=404, detail="Face record not found")
             
         img_record = db.get_image_by_id(face.image_id)
-        if not img_record or not img_record.drive_file_id:
+        if not img_record or not img_record.file_path:
             raise HTTPException(status_code=404, detail="Original image not found")
             
-        # Download original
-        content = await run_in_threadpool(drive_client.download_file, img_record.drive_file_id)
+        # Read original
+        file_path = Path(img_record.file_path)
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found on disk")
+        content = file_path.read_bytes()
         
         # Parse bbox
         bbox = json.loads(face.bbox)
@@ -486,30 +425,58 @@ async def get_face_thumbnail(face_id: int):
         print(f"Face thumbnail generation failed for {face_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/drive-image/{file_id}")
-async def get_drive_image(file_id: str):
-    """Serve image from Google Drive"""
+@app.get("/api/image/{image_id}")
+async def get_image_file(image_id: int):
+    """Serve image from local storage"""
+    img = db.get_image_by_id(image_id)
+    if not img or not img.file_path:
+        raise HTTPException(status_code=404, detail="Image not found")
+    
     try:
-        content = await run_in_threadpool(drive_client.download_file, file_id)
+        file_path = Path(img.file_path)
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found on disk")
+            
+        content = file_path.read_bytes()
         processed_content = await run_in_threadpool(process_image_for_serving, content)
         return Response(content=processed_content, media_type="image/jpeg") 
     except Exception as e:
-        print(f"Error serving image {file_id}: {e}")
-        raise HTTPException(status_code=404, detail="Image not found")
+        print(f"Error serving image {image_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/drive-image-thumbnail/{file_id}")
-async def get_drive_image_thumbnail(file_id: str):
-    """Serve thumbnail from Google Drive (with local caching)"""
-    thumbnail_path = THUMBNAIL_CACHE_DIR / f"{file_id}_thumb.jpg"
+@app.get("/api/image/video/{filename}")
+async def get_video_file(filename: str):
+    """Serve video file from local storage"""
+    file_path = UPLOAD_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    return Response(content=file_path.read_bytes(), media_type="video/mp4")
+
+@app.get("/api/thumbnail/{image_id}")
+async def get_thumbnail(image_id: int):
+    """Serve thumbnail (with local caching)"""
+    thumbnail_path = THUMBNAIL_CACHE_DIR / f"{image_id}_thumb.jpg"
     
     if thumbnail_path.exists():
         return Response(content=thumbnail_path.read_bytes(), media_type="image/jpeg")
     
-    try:
-        # Download original
-        content = await run_in_threadpool(drive_client.download_file, file_id)
+    return await generate_thumbnail(image_id)
+
+async def generate_thumbnail(image_id: int):
+    """Generate and save thumbnail for an image"""
+    img = db.get_image_by_id(image_id)
+    if not img or not img.file_path:
+        raise HTTPException(status_code=404, detail="Image not found")
         
-        # Process image
+    thumbnail_path = THUMBNAIL_CACHE_DIR / f"{image_id}_thumb.jpg"
+    
+    try:
+        file_path = Path(img.file_path)
+        if not file_path.exists():
+             raise HTTPException(status_code=404, detail="Original file not found")
+             
+        content = file_path.read_bytes()
         thumb_bytes = await run_in_threadpool(process_image_for_serving, content, True)
         
         # Save to cache
@@ -517,17 +484,8 @@ async def get_drive_image_thumbnail(file_id: str):
         
         return Response(content=thumb_bytes, media_type="image/jpeg")
     except Exception as e:
-        print(f"Thumbnail generation failed for {file_id}: {e}")
-        # If it's a 404, we should probably return a 404
-        if "File not found" in str(e) or "404" in str(e):
-             raise HTTPException(status_code=404, detail="Image not found on Drive")
-             
-        # Fallback to original if thumbnail fails for other reasons
-        try:
-            content = await run_in_threadpool(drive_client.download_file, file_id)
-            return Response(content=content, media_type="image/jpeg")
-        except:
-            raise HTTPException(status_code=404, detail="Image not found")
+        print(f"Thumbnail generation failed for {image_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 async def generate_all_missing_thumbnails():
     """Background task to generate thumbnails for all images that don't have them."""
@@ -535,16 +493,15 @@ async def generate_all_missing_thumbnails():
     all_images = db.get_all_images()
     count = 0
     for img in all_images:
-        if img.drive_file_id:
-            thumbnail_path = THUMBNAIL_CACHE_DIR / f"{img.drive_file_id}_thumb.jpg"
-            if not thumbnail_path.exists():
-                try:
-                    await get_drive_image_thumbnail(img.drive_file_id)
-                    count += 1
-                    if count % 10 == 0:
-                        print(f"Generated {count} thumbnails...")
-                except Exception as e:
-                    print(f"Failed to generate thumbnail for {img.drive_file_id}: {e}")
+        thumbnail_path = THUMBNAIL_CACHE_DIR / f"{img.id}_thumb.jpg"
+        if not thumbnail_path.exists():
+            try:
+                await generate_thumbnail(img.id)
+                count += 1
+                if count % 10 == 0:
+                    print(f"Generated {count} thumbnails...")
+            except Exception as e:
+                print(f"Failed to generate thumbnail for {img.id}: {e}")
     print(f"Finished background thumbnail generation. Generated {count} thumbnails.")
 
 @app.on_event("startup")
@@ -597,8 +554,8 @@ async def get_face_group_images(group_id: int, limit: int = Query(50, le=200), o
                 filename=img.filename,
                 description=img.description or "",
                 created_at=img.created_at.isoformat() if img.created_at else "",
-                image_url=f"/api/drive-image/{img.drive_file_id}" if img and img.drive_file_id else f"/images/{img.filename}",
-                thumbnail_url=f"/api/drive-image-thumbnail/{img.drive_file_id}" if img and img.drive_file_id else None
+                image_url=f"/api/image/{img.id}",
+                thumbnail_url=f"/api/thumbnail/{img.id}"
             ))
             
     return results

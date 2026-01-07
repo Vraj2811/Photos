@@ -59,13 +59,6 @@ class ImageDB:
         finally:
             session.close()
 
-    def get_image_by_drive_id(self, drive_id):
-        session = self.SessionLocal()
-        try:
-            return session.query(ImageRecord).filter(ImageRecord.drive_file_id == drive_id).first()
-        finally:
-            session.close()
-
     def delete_image(self, image_id):
         session = self.SessionLocal()
         try:
