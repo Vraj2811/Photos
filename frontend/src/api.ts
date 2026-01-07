@@ -1,7 +1,7 @@
 import axios from 'axios'
 import type { SystemStatus, SearchResult, ImageInfo, UploadResponse, FaceGroupInfo } from './types'
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = 'http://192.168.1.20:8000'
 
 const api = axios.create({
   baseURL: API_BASE,

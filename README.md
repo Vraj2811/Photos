@@ -67,13 +67,13 @@ pip install -r requirements.txt
 ```bash
 streamlit run streamlit_app.py
 ```
-Opens at `http://localhost:8501`
+Opens at `http://192.168.1.20:8501`
 
 #### Option 2: Gradio (Simple, clean UI)
 ```bash
 python gradio_app.py
 ```
-Opens at `http://localhost:7860`
+Opens at `http://192.168.1.20:7860`
 
 **Both use the same database and work identically!** See [GRADIO_VS_STREAMLIT.md](GRADIO_VS_STREAMLIT.md) for comparison.
 

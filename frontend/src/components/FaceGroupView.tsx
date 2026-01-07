@@ -92,7 +92,7 @@ export default function FaceGroupView({ groupId, onBack, onImageClick, refreshTr
                             {images.map((image) => (
                                 <ImageCard
                                     key={image.id}
-                                    imageUrl={`http://localhost:8000${image.thumbnail_url || image.image_url}`}
+                                    imageUrl={`http://192.168.1.20:8000${image.thumbnail_url || image.image_url}`}
                                     description={image.description}
                                     filename={image.filename}
                                     onClick={() => onImageClick(image)}

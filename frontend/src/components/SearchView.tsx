@@ -122,7 +122,7 @@ export default function SearchView({ onImageClick, refreshTrigger }: SearchViewP
             {results.map((result) => (
               <ImageCard
                 key={result.image_id}
-                imageUrl={`http://localhost:8000${result.thumbnail_url || result.image_url}`}
+                imageUrl={`http://192.168.1.20:8000${result.thumbnail_url || result.image_url}`}
                 description={result.description}
                 confidence={result.confidence}
                 filename={result.filename}
