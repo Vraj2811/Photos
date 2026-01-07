@@ -54,6 +54,7 @@ class SearchResult(BaseModel):
     description: str
     confidence: float
     image_url: str
+    thumbnail_url: Optional[str] = None
 
 class ImageInfo(BaseModel):
     id: int
@@ -61,6 +62,7 @@ class ImageInfo(BaseModel):
     description: str
     created_at: str
     image_url: str
+    thumbnail_url: Optional[str] = None
 
 class SystemStatus(BaseModel):
     total_images: int

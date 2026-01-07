@@ -40,10 +40,12 @@ out/
 .vercel
 
 # Project Specific
+uploads/
+faiss_indexes/
 backend/thumbnails/
 backend/images/
 backend/vector_index.faiss
-backend/image_search.db
+image_search.db
 backend/service_accounts/*.json
 !backend/service_accounts/.gitkeep
 

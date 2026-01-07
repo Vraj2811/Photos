@@ -89,19 +89,26 @@ class FaceProcessor:
         self.similarity_threshold = 0.6
         self.db = db
 
-    def process_image(self, image_bytes, image_id):
+    def detect_faces(self, image_bytes):
+        """Detect faces and return face data without saving to DB."""
         try:
             # Convert bytes to cv2 image
             nparr = np.frombuffer(image_bytes, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
             if img is None:
-                print(f"Failed to decode image for face analysis (ID: {image_id})")
-                return
+                return []
             
             faces = self.app.get(img)
-            print(f"Detected {len(faces)} faces in image {image_id}")
-            
+            return faces
+        except Exception as e:
+            print(f"Face detection failed: {e}")
+            return []
+
+    def save_faces(self, faces, image_id):
+        """Save detected faces to DB and link to image_id."""
+        try:
+            print(f"Saving {len(faces)} faces for image {image_id}")
             for face in faces:
                 embedding = face.normed_embedding
                 bbox = face.bbox
@@ -117,9 +124,14 @@ class FaceProcessor:
                 
                 # Save detected face
                 self.db.add_detected_face(image_id, group_id, embedding, bbox, confidence)
-                
         except Exception as e:
-            print(f"Face processing failed for image {image_id}: {e}")
+            print(f"Failed to save faces for image {image_id}: {e}")
+
+    def process_image(self, image_bytes, image_id):
+        """Legacy method for background tasks."""
+        faces = self.detect_faces(image_bytes)
+        if faces:
+            self.save_faces(faces, image_id)
 
     def find_matching_group(self, face_embedding):
         face_embedding = normalize(face_embedding)

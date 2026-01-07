@@ -14,6 +14,7 @@ import numpy as np
 from PIL import Image, ImageOps
 import io
 import asyncio
+from pathlib import Path
 
 from config import (
     DATABASE_PATH, UPLOAD_DIR, THUMBNAIL_CACHE_DIR
@@ -178,7 +179,10 @@ async def delete_image(image_id: int):
 
 @app.post("/api/upload")
 async def upload_image(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
-    """Upload and process image or video"""
+    """Upload and process image or video with FULL parallel execution and rollback"""
+    file_path = None
+    image_id = None
+    thumbnail_path = None
     try:
         # Read file content
         contents = await file.read()
@@ -187,84 +191,137 @@ async def upload_image(background_tasks: BackgroundTasks, file: UploadFile = Fil
         content_type = file.content_type or ""
         is_video = content_type.startswith("video/")
         
-        description = None
-        embedding = None
-        
-        if is_video:
-            print(f"Video detected: {file.filename}")
-            description = "Video uploaded (AI processing skipped)"
-        else:
-            # Validate image if not video
-            try:
-                image = Image.open(io.BytesIO(contents))
-                image.verify()
-                # Re-open because verify() can close the file pointer or leave it at end
-                image = Image.open(io.BytesIO(contents)) 
-            except Exception:
-                 raise HTTPException(status_code=400, detail="Invalid image file")
-            
-            # Generate description for image
-            print(f"Generating description for {file.filename}...")
-            description = await run_in_threadpool(ollama_proc.generate_description, contents)
-            
-            if not description:
-                print(f"Warning: Failed to generate description for {file.filename}. Using placeholder.")
-                description = "Image uploaded (AI description unavailable due to system limitations)"
-            else:
-                # Generate embedding only if description succeeded
-                print(f"Generating embedding for {file.filename}...")
-                embedding = await run_in_threadpool(ollama_proc.generate_embedding, description)
-
-        # Generate filename and save locally
+        # Generate filename
         timestamp = int(time.time())
         file_hash = hashlib.md5(contents).hexdigest()[:8]
         ext = Path(file.filename).suffix
         filename = f"{timestamp}_{file_hash}{ext}"
         file_path = UPLOAD_DIR / filename
+
+        # --- Define Parallel Tasks ---
+
+        async def save_file_task():
+            print(f"Saving {filename} to local storage...")
+            def _save():
+                with open(file_path, "wb") as f:
+                    f.write(contents)
+            await run_in_threadpool(_save)
+
+        async def process_ai_task():
+            if is_video:
+                return "Video uploaded (AI processing skipped)", None
+            
+            # Validate image
+            try:
+                image = Image.open(io.BytesIO(contents))
+                image.verify()
+            except Exception:
+                 raise HTTPException(status_code=400, detail="Invalid image file")
+            
+            print(f"Generating description for {file.filename}...")
+            desc = await run_in_threadpool(ollama_proc.generate_description, contents)
+            
+            if not desc:
+                print(f"Warning: AI description failed for {file.filename}")
+                desc = "Image uploaded (AI description unavailable)"
+                return desc, None
+            
+            print(f"Generating embedding for {file.filename}...")
+            emb = await run_in_threadpool(ollama_proc.generate_embedding, desc)
+            return desc, emb
+
+        async def detect_faces_task():
+            if is_video:
+                return []
+            print(f"Detecting faces in {file.filename}...")
+            return await run_in_threadpool(face_proc.detect_faces, contents)
+
+        async def generate_thumbnail_bytes_task():
+            if is_video:
+                return None
+            print(f"Generating thumbnail bytes for {file.filename}...")
+            return await run_in_threadpool(process_image_for_serving, contents, True)
+
+        # --- Execute All Tasks Simultaneously ---
+        print(f"🚀 Starting FULL parallel processing for {file.filename}...")
+        results = await asyncio.gather(
+            save_file_task(),
+            process_ai_task(),
+            detect_faces_task(),
+            generate_thumbnail_bytes_task()
+        )
         
-        print(f"Saving {filename} to local storage...")
-        with open(file_path, "wb") as f:
-            f.write(contents)
-        
-        # If it's a video, return early and do not add to database
+        _, ai_results, detected_faces, thumb_bytes = results
+        description, embedding = ai_results
+
+        # If it's a video, return early
         if is_video:
-            print(f"Video {filename} saved locally. Skipping database entry as requested.")
             return {
                 "success": True,
                 "image_id": None,
                 "filename": filename,
                 "description": description,
                 "image_url": f"/api/image/video/{filename}",
-                "message": "Video uploaded locally (not stored in database)"
+                "message": "Video uploaded locally"
             }
 
-        # Save to database
+        # --- Save to Database ---
         print(f"Saving {filename} to database...")
         image_id = db.add_image(file.filename, str(file_path), description, embedding)
         if not image_id:
-            print(f"Failed to save to DB. Cleaning up local file {file_path}...")
-            file_path.unlink()
-            return {"success": False, "error": "Failed to save to database"}
+            raise Exception("Failed to save image to database")
         
-        # Add to vector index if embedding exists
+        # --- Post-DB Parallel Tasks (Linking) ---
+        
+        # 1. Add to vector index
         if embedding is not None:
-            vector_db.add_vector(embedding, image_id)
+            print(f"Adding {filename} to vector index...")
+            success = vector_db.add_vector(embedding, image_id)
+            if not success:
+                raise Exception("Failed to add image to vector index")
         
-        # Process faces and generate thumbnail asynchronously
-        print(f"Queueing background tasks for {filename}...")
-        background_tasks.add_task(face_proc.process_image, contents, image_id)
-        background_tasks.add_task(generate_thumbnail, image_id)
+        # 2. Save detected faces
+        if detected_faces:
+            print(f"Linking {len(detected_faces)} faces to image {image_id}...")
+            await run_in_threadpool(face_proc.save_faces, detected_faces, image_id)
+        
+        # 3. Save thumbnail to disk
+        if thumb_bytes:
+            thumbnail_path = THUMBNAIL_CACHE_DIR / f"{image_id}_thumb.jpg"
+            print(f"Saving thumbnail to {thumbnail_path}...")
+            def _save_thumb():
+                thumbnail_path.write_bytes(thumb_bytes)
+            await run_in_threadpool(_save_thumb)
         
         return {
             "success": True,
             "image_id": image_id,
             "filename": file.filename,
             "description": description,
-            "image_url": f"/api/image/{image_id}"
+            "image_url": f"/api/image/{image_id}",
+            "thumbnail_url": f"/api/thumbnail/{image_id}"
         }
         
     except Exception as e:
-        print(f"Upload failed: {e}")
+        print(f"❌ Upload failed for {file.filename}: {e}")
+        # Rollback: Delete local file
+        if file_path and file_path.exists():
+            print(f"Rolling back: Deleting local file {file_path}")
+            file_path.unlink()
+        
+        # Rollback: Delete thumbnail
+        if thumbnail_path and thumbnail_path.exists():
+            print(f"Rolling back: Deleting thumbnail {thumbnail_path}")
+            thumbnail_path.unlink()
+        
+        # Rollback: Delete DB entry and Vector
+        if image_id:
+            print(f"Rolling back: Deleting database entry {image_id}")
+            db.delete_image(image_id)
+            vector_db.delete_vector(image_id)
+            
+        if isinstance(e, HTTPException):
+            raise e
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/vector/{image_id}", response_model=VectorStats)
