@@ -40,10 +40,18 @@ class ImageDB:
         finally:
             session.close()
     
-    def get_all_images(self, limit=None, offset=None):
+    def get_all_images(self, limit=None, offset=None, exclude_videos=True):
         session = self.SessionLocal()
         try:
-            query = session.query(ImageRecord).order_by(ImageRecord.created_at.desc())
+            query = session.query(ImageRecord)
+            
+            if exclude_videos:
+                video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.webm']
+                for ext in video_extensions:
+                    query = query.filter(~ImageRecord.filename.ilike(f'%{ext}'))
+            
+            query = query.order_by(ImageRecord.created_at.desc())
+            
             if offset is not None:
                 query = query.offset(offset)
             if limit is not None:

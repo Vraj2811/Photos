@@ -83,14 +83,21 @@ class OllamaProcessor:
 
 class FaceProcessor:
     def __init__(self, db):
-        print("Initializing FaceAnalysis(name='antelopev2')...")
-        self.app = FaceAnalysis(name="antelopev2", providers=['CPUExecutionProvider'])
-        self.app.prepare(ctx_id=0, det_size=(640, 640))
-        self.similarity_threshold = 0.6
         self.db = db
+        self.similarity_threshold = 0.6
+        if FaceAnalysis:
+            print("Initializing FaceAnalysis(name='antelopev2')...")
+            self.app = FaceAnalysis(name="antelopev2", providers=['CPUExecutionProvider'])
+            self.app.prepare(ctx_id=0, det_size=(640, 640))
+        else:
+            print("FaceAnalysis not available. Face detection will be disabled.")
+            self.app = None
 
     def detect_faces(self, image_bytes):
         """Detect faces and return face data without saving to DB."""
+        if self.app is None:
+            return []
+            
         try:
             # Convert bytes to cv2 image
             nparr = np.frombuffer(image_bytes, np.uint8)

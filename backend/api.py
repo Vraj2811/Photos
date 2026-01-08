@@ -109,21 +109,13 @@ async def search_images(query: SearchQuery):
     return results
 
 @app.get("/api/images", response_model=List[ImageInfo])
-async def get_all_images(limit: int = Query(50, le=200), offset: int = Query(0, ge=0)):
+async def get_all_images(limit: int = Query(30, le=200), offset: int = Query(0, ge=0)):
     """Get all images (excluding videos) with pagination"""
-    # Note: Filtering videos in memory after fetching from DB is inefficient for large datasets.
-    # However, for now we'll keep the logic and just add pagination to the DB call.
-    # A better way would be to add a 'type' column to the database.
     
-    all_images = db.get_all_images(limit=limit, offset=offset)
+    all_images = db.get_all_images(limit=limit, offset=offset, exclude_videos=True)
     
     results = []
     for img in all_images:
-        # Filter out videos
-        video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.webm'}
-        if any(img.filename.lower().endswith(ext) for ext in video_extensions):
-            continue
-            
         results.append(ImageInfo(
             id=img.id,
             filename=img.filename,
