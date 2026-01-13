@@ -7,7 +7,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Response, B
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 from contextlib import asynccontextmanager
-from typing import List
+from typing import List, Optional
 import json
 import time
 import hashlib
@@ -16,13 +16,15 @@ from PIL import Image, ImageOps
 import io
 import asyncio
 from pathlib import Path
+from datetime import datetime
+
 
 from config import (
     DATABASE_PATH, UPLOAD_DIR, THUMBNAIL_CACHE_DIR
 )
 from models import (
     SearchQuery, SearchResult, ImageInfo, SystemStatus, VectorStats,
-    FaceGroupInfo
+    FaceGroupInfo, FolderInfo, FolderCreate
 )
 from database import ImageDB
 from processors import OllamaProcessor, FaceProcessor
@@ -69,10 +71,10 @@ async def root():
     return {"message": "AI Image Search API", "version": "1.0.0"}
 
 @app.get("/api/status", response_model=SystemStatus)
-async def get_status():
+async def get_status(folder_id: Optional[int] = Query(None)):
     """Get system status"""
     vector_db.reload_if_needed()
-    all_items = db.get_all_images()
+    all_items = db.get_all_images(folder_id=folder_id)
     
     # Filter out videos for the count
     video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.webm'}
@@ -80,7 +82,7 @@ async def get_status():
     
     return SystemStatus(
         total_images=image_count,
-        total_vectors=vector_db.index.ntotal if vector_db.index else 0,
+        total_vectors=db.count_vectors(folder_id),
         ollama_connected=len(ollama_proc.models_available) > 0,
         models_available=ollama_proc.models_available,
         status="ready" if image_count > 0 else "empty"
@@ -99,13 +101,18 @@ async def search_images(query: SearchQuery):
         raise HTTPException(status_code=500, detail="Failed to generate embedding")
     
     # Search
-    vector_results = vector_db.search(query_embedding, query.top_k)
+    # We search for more results than requested because we might filter some out by folder
+    search_k = query.top_k * 2 if query.folder_id else query.top_k
+    vector_results = vector_db.search(query_embedding, search_k)
     
-    # Get image details
+    # Get image details and filter by folder
     results = []
     for result in vector_results:
         img = db.get_image_by_id(result['image_id'])
         if img:
+            if query.folder_id is not None and img.folder_id != query.folder_id:
+                continue
+            
             results.append(SearchResult(
                 image_id=img.id,
                 filename=img.filename,
@@ -114,14 +121,17 @@ async def search_images(query: SearchQuery):
                 image_url=f"/api/image/{img.id}",
                 thumbnail_url=f"/api/thumbnail/{img.id}"
             ))
+            
+            if len(results) >= query.top_k:
+                break
     
     return results
 
 @app.get("/api/images", response_model=List[ImageInfo])
-async def get_all_images(limit: int = Query(30, le=200), offset: int = Query(0, ge=0)):
+async def get_all_images(limit: int = Query(30, le=200), offset: int = Query(0, ge=0), folder_id: Optional[int] = Query(None)):
     """Get all images (excluding videos) with pagination"""
     
-    all_images = db.get_all_images(limit=limit, offset=offset, exclude_videos=True)
+    all_images = db.get_all_images(limit=limit, offset=offset, exclude_videos=True, folder_id=folder_id)
     
     results = []
     for img in all_images:
@@ -131,7 +141,8 @@ async def get_all_images(limit: int = Query(30, le=200), offset: int = Query(0, 
             description=img.description or "",
             created_at=img.created_at.isoformat() if img.created_at else "",
             image_url=f"/api/image/{img.id}",
-            thumbnail_url=f"/api/thumbnail/{img.id}"
+            thumbnail_url=f"/api/thumbnail/{img.id}",
+            folder_id=img.folder_id
         ))
     
     return results
@@ -181,7 +192,7 @@ async def delete_image(image_id: int):
         raise HTTPException(status_code=500, detail="Failed to delete from database")
 
 @app.post("/api/upload")
-async def upload_image(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def upload_image(background_tasks: BackgroundTasks, file: UploadFile = File(...), folder_id: Optional[int] = Query(None)):
     """Upload and process image or video with FULL parallel execution and rollback"""
     file_path = None
     image_id = None
@@ -199,7 +210,16 @@ async def upload_image(background_tasks: BackgroundTasks, file: UploadFile = Fil
         file_hash = hashlib.md5(contents).hexdigest()[:8]
         ext = Path(file.filename).suffix
         filename = f"{timestamp}_{file_hash}{ext}"
-        file_path = UPLOAD_DIR / filename
+        
+        # Use folder name in path if folder_id is provided
+        current_upload_dir = UPLOAD_DIR
+        if folder_id:
+            folder = db.get_folder_by_id(folder_id)
+            if folder:
+                current_upload_dir = UPLOAD_DIR / folder.name
+                current_upload_dir.mkdir(parents=True, exist_ok=True)
+        
+        file_path = current_upload_dir / filename
 
         # --- Define Parallel Tasks ---
 
@@ -270,7 +290,7 @@ async def upload_image(background_tasks: BackgroundTasks, file: UploadFile = Fil
 
         # --- Save to Database ---
         print(f"Saving {filename} to database...")
-        image_id = db.add_image(file.filename, str(file_path), description, embedding)
+        image_id = db.add_image(file.filename, str(file_path), description, embedding, folder_id=folder_id)
         if not image_id:
             raise Exception("Failed to save image to database")
         
@@ -566,13 +586,13 @@ async def generate_all_missing_thumbnails():
 
 
 @app.get("/api/face-groups", response_model=List[FaceGroupInfo])
-async def get_face_groups():
+async def get_face_groups(folder_id: Optional[int] = Query(None)):
     """Get all face groups with representative images"""
-    groups = db.get_all_face_groups()
+    groups = db.get_all_face_groups(folder_id=folder_id)
     results = []
     
     for group in groups:
-        faces = db.get_faces_by_group(group.id)
+        faces = db.get_faces_by_group(group.id, folder_id=folder_id)
         if not faces:
             continue
             
@@ -589,9 +609,9 @@ async def get_face_groups():
     return results
 
 @app.get("/api/face-groups/{group_id}", response_model=List[ImageInfo])
-async def get_face_group_images(group_id: int, limit: int = Query(50, le=200), offset: int = Query(0, ge=0)):
+async def get_face_group_images(group_id: int, limit: int = Query(50, le=200), offset: int = Query(0, ge=0), folder_id: Optional[int] = Query(None)):
     """Get all images in a face group with pagination"""
-    faces = db.get_faces_by_group(group_id)
+    faces = db.get_faces_by_group(group_id, folder_id=folder_id)
     if not faces:
         raise HTTPException(status_code=404, detail="Group not found or empty")
         
@@ -610,10 +630,52 @@ async def get_face_group_images(group_id: int, limit: int = Query(50, le=200), o
                 description=img.description or "",
                 created_at=img.created_at.isoformat() if img.created_at else "",
                 image_url=f"/api/image/{img.id}",
-                thumbnail_url=f"/api/thumbnail/{img.id}"
+                thumbnail_url=f"/api/thumbnail/{img.id}",
+                folder_id=img.folder_id
             ))
             
     return results
+
+# Folder Endpoints
+@app.get("/api/folders", response_model=List[FolderInfo])
+async def get_folders():
+    """Get all folders"""
+    folders = db.get_all_folders()
+    return [FolderInfo(
+        id=f.id,
+        name=f.name,
+        created_at=f.created_at.isoformat()
+    ) for f in folders]
+
+@app.post("/api/folders", response_model=FolderInfo)
+async def create_folder(folder: FolderCreate):
+    """Create a new folder"""
+    folder_id = db.add_folder(folder.name)
+    if not folder_id:
+        raise HTTPException(status_code=400, detail="Folder already exists or failed to create")
+    
+    # Create physical directory
+    try:
+        folder_path = UPLOAD_DIR / folder.name
+        folder_path.mkdir(parents=True, exist_ok=True)
+        print(f"Created physical directory: {folder_path}")
+    except Exception as e:
+        print(f"Failed to create physical directory: {e}")
+    
+    return FolderInfo(
+        id=folder_id,
+        name=folder.name,
+        created_at=datetime.now().isoformat()
+    )
+
+
+@app.delete("/api/folders/{folder_id}")
+async def delete_folder(folder_id: int):
+    """Delete a folder"""
+    if db.delete_folder(folder_id):
+        return {"success": True, "message": "Folder deleted"}
+    else:
+        raise HTTPException(status_code=404, detail="Folder not found")
 
 if __name__ == "__main__":
     import uvicorn

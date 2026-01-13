@@ -3,7 +3,7 @@ from sqlalchemy.orm import sessionmaker
 import json
 from datetime import datetime
 from config import DATABASE_URL
-from models import Base, ImageRecord, FaceGroup, DetectedFace
+from models import Base, ImageRecord, FaceGroup, DetectedFace, Folder
 
 # Initialize database
 engine = create_engine(DATABASE_URL, echo=False)
@@ -28,7 +28,8 @@ class ImageDB:
                 drive_file_id=kwargs.get('drive_file_id'),
                 description=description,
                 embedding=embedding_json,
-                created_at=datetime.now()
+                created_at=datetime.now(),
+                folder_id=kwargs.get('folder_id')
             )
             session.add(image_record)
             session.commit()
@@ -40,7 +41,7 @@ class ImageDB:
         finally:
             session.close()
     
-    def get_all_images(self, limit=None, offset=None, exclude_videos=True):
+    def get_all_images(self, limit=None, offset=None, exclude_videos=True, folder_id=None):
         session = self.SessionLocal()
         try:
             query = session.query(ImageRecord)
@@ -49,6 +50,9 @@ class ImageDB:
                 video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.webm']
                 for ext in video_extensions:
                     query = query.filter(~ImageRecord.filename.ilike(f'%{ext}'))
+            
+            if folder_id is not None:
+                query = query.filter(ImageRecord.folder_id == folder_id)
             
             query = query.order_by(ImageRecord.created_at.desc())
             
@@ -60,6 +64,16 @@ class ImageDB:
         finally:
             session.close()
     
+    def count_vectors(self, folder_id=None):
+        session = self.SessionLocal()
+        try:
+            query = session.query(ImageRecord).filter(ImageRecord.embedding != None)
+            if folder_id is not None:
+                query = query.filter(ImageRecord.folder_id == folder_id)
+            return query.count()
+        finally:
+            session.close()
+
     def get_image_by_id(self, image_id):
         session = self.SessionLocal()
         try:
@@ -120,17 +134,24 @@ class ImageDB:
         finally:
             session.close()
 
-    def get_all_face_groups(self):
+    def get_all_face_groups(self, folder_id=None):
         session = self.SessionLocal()
         try:
-            return session.query(FaceGroup).all()
+            if folder_id is None:
+                return session.query(FaceGroup).all()
+            else:
+                # Get groups that have faces in images belonging to the folder
+                return session.query(FaceGroup).join(DetectedFace).join(ImageRecord).filter(ImageRecord.folder_id == folder_id).distinct().all()
         finally:
             session.close()
 
-    def get_faces_by_group(self, group_id):
+    def get_faces_by_group(self, group_id, folder_id=None):
         session = self.SessionLocal()
         try:
-            return session.query(DetectedFace).filter(DetectedFace.group_id == group_id).all()
+            query = session.query(DetectedFace).filter(DetectedFace.group_id == group_id)
+            if folder_id is not None:
+                query = query.join(ImageRecord).filter(ImageRecord.folder_id == folder_id)
+            return query.all()
         finally:
             session.close()
 
@@ -138,5 +159,52 @@ class ImageDB:
         session = self.SessionLocal()
         try:
             return session.query(DetectedFace).filter(DetectedFace.id == face_id).first()
+        finally:
+            session.close()
+
+    # Folder methods
+    def add_folder(self, name):
+        session = self.SessionLocal()
+        try:
+            folder = Folder(name=name)
+            session.add(folder)
+            session.commit()
+            return folder.id
+        except Exception as e:
+            session.rollback()
+            print(f"Failed to add folder: {e}")
+            return None
+        finally:
+            session.close()
+
+    def get_all_folders(self):
+        session = self.SessionLocal()
+        try:
+            return session.query(Folder).all()
+        finally:
+            session.close()
+
+    def get_folder_by_id(self, folder_id):
+        session = self.SessionLocal()
+        try:
+            return session.query(Folder).filter(Folder.id == folder_id).first()
+        finally:
+            session.close()
+
+    def delete_folder(self, folder_id):
+        session = self.SessionLocal()
+        try:
+            folder = session.query(Folder).filter(Folder.id == folder_id).first()
+            if folder:
+                # Set folder_id to null for images in this folder
+                session.query(ImageRecord).filter(ImageRecord.folder_id == folder_id).update({ImageRecord.folder_id: None})
+                session.delete(folder)
+                session.commit()
+                return True
+            return False
+        except Exception as e:
+            session.rollback()
+            print(f"Failed to delete folder: {e}")
+            return False
         finally:
             session.close()

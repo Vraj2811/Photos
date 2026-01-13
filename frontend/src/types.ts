@@ -22,6 +22,13 @@ export interface ImageInfo {
   created_at: string
   image_url: string
   thumbnail_url?: string
+  folder_id?: number
+}
+
+export interface Folder {
+  id: number
+  name: string
+  created_at: string
 }
 
 export interface UploadResponse {

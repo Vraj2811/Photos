@@ -7,11 +7,12 @@ export interface UploadedImage {
     status: 'pending' | 'uploading' | 'success' | 'error';
     description?: string;
     error?: string;
+    folderId?: number;
 }
 
 interface UploadContextType {
     uploads: UploadedImage[];
-    addUploads: (files: File[]) => void;
+    addUploads: (files: File[], folderId?: number) => void;
     clearCompleted: () => void;
     isUploading: boolean;
 }
@@ -27,7 +28,7 @@ export function UploadProvider({ children, onUploadSuccess }: { children: React.
         ));
 
         try {
-            const result = await uploadImage(image.file);
+            const result = await uploadImage(image.file, image.folderId);
 
             if (result.success) {
                 setUploads(prev => prev.map(img =>
@@ -48,11 +49,12 @@ export function UploadProvider({ children, onUploadSuccess }: { children: React.
         }
     }, [onUploadSuccess]);
 
-    const addUploads = useCallback((files: File[]) => {
+    const addUploads = useCallback((files: File[], folderId?: number) => {
         const newUploads = files.map(file => ({
             file,
             preview: URL.createObjectURL(file),
-            status: 'pending' as const
+            status: 'pending' as const,
+            folderId
         }));
 
         setUploads(prev => [...prev, ...newUploads]);

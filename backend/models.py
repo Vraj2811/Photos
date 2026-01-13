@@ -7,6 +7,15 @@ from datetime import datetime
 Base = declarative_base()
 
 # SQLAlchemy Models
+class Folder(Base):
+    __tablename__ = 'folders'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False, unique=True)
+    created_at = Column(DateTime, default=datetime.now)
+    
+    # Relationships
+    images = relationship("ImageRecord", back_populates="folder")
+
 class ImageRecord(Base):
     __tablename__ = 'images'
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -16,9 +25,11 @@ class ImageRecord(Base):
     description = Column(Text)
     embedding = Column(Text)
     created_at = Column(DateTime, default=datetime.now)
+    folder_id = Column(Integer, ForeignKey('folders.id'), nullable=True)
     
     # Relationships
     faces = relationship("DetectedFace", back_populates="image", cascade="all, delete-orphan")
+    folder = relationship("Folder", back_populates="images")
 
 class FaceGroup(Base):
     __tablename__ = 'face_groups'
@@ -47,6 +58,7 @@ class DetectedFace(Base):
 class SearchQuery(BaseModel):
     query: str
     top_k: int = 5
+    folder_id: Optional[int] = None
 
 class SearchResult(BaseModel):
     image_id: int
@@ -63,6 +75,7 @@ class ImageInfo(BaseModel):
     created_at: str
     image_url: str
     thumbnail_url: Optional[str] = None
+    folder_id: Optional[int] = None
 
 class SystemStatus(BaseModel):
     total_images: int
@@ -91,3 +104,11 @@ class DetectedFaceInfo(BaseModel):
     group_id: int
     bbox: List[float]
     confidence: float
+
+class FolderInfo(BaseModel):
+    id: int
+    name: str
+    created_at: str
+
+class FolderCreate(BaseModel):
+    name: str

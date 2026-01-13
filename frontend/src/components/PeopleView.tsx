@@ -5,19 +5,20 @@ import type { FaceGroupInfo } from '../types'
 
 interface PeopleViewProps {
     onSelectGroup: (groupId: number) => void
+    folderId?: number
 }
 
-export default function PeopleView({ onSelectGroup }: PeopleViewProps) {
+export default function PeopleView({ onSelectGroup, folderId }: PeopleViewProps) {
     const [groups, setGroups] = useState<FaceGroupInfo[]>([])
     const [loading, setLoading] = useState(true)
 
     useEffect(() => {
         loadGroups()
-    }, [])
+    }, [folderId])
 
     const loadGroups = async () => {
         try {
-            const data = await getFaceGroups()
+            const data = await getFaceGroups(folderId)
             setGroups(data)
         } catch (error) {
             console.error('Failed to load face groups:', error)

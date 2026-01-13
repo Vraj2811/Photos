@@ -7,9 +7,10 @@ import ImageCard from './ImageCard'
 interface SearchViewProps {
   onImageClick: (image: ImageInfo) => void
   refreshTrigger: number
+  folderId?: number
 }
 
-export default function SearchView({ onImageClick, refreshTrigger }: SearchViewProps) {
+export default function SearchView({ onImageClick, refreshTrigger, folderId }: SearchViewProps) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SearchResult[]>([])
   const [loading, setLoading] = useState(false)
@@ -20,7 +21,7 @@ export default function SearchView({ onImageClick, refreshTrigger }: SearchViewP
     if (searched && query.trim()) {
       handleSearch()
     }
-  }, [refreshTrigger])
+  }, [refreshTrigger, folderId])
 
   const handleSearch = async () => {
     if (!query.trim()) return
@@ -30,7 +31,7 @@ export default function SearchView({ onImageClick, refreshTrigger }: SearchViewP
     setSearched(true)
 
     try {
-      const data = await searchImages(query, 10)
+      const data = await searchImages(query, 10, folderId)
       setResults(data)
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Search failed. Please try again.')

@@ -7,8 +7,9 @@ import PeopleView from './components/PeopleView'
 import FaceGroupView from './components/FaceGroupView'
 import ImageModal from './components/ImageModal'
 import StatusBar from './components/StatusBar'
-import { getStatus, deleteImage as apiDeleteImage } from './api'
-import type { SystemStatus, ImageInfo } from './types'
+import { getStatus, deleteImage as apiDeleteImage, getFolders, createFolder } from './api'
+import type { SystemStatus, ImageInfo, Folder } from './types'
+import { Folder as FolderIcon, Plus } from 'lucide-react'
 import { UploadProvider, useUploads } from './UploadContext'
 
 type View = 'search' | 'upload' | 'gallery' | 'people' | 'face-group'
@@ -85,21 +86,49 @@ function AppContent() {
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [status, setStatus] = useState<SystemStatus | null>(null)
   const [loading, setLoading] = useState(true)
+  const [folders, setFolders] = useState<Folder[]>([])
+  const [selectedFolderId, setSelectedFolderId] = useState<number | undefined>(undefined)
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
 
   useEffect(() => {
     loadStatus()
+    loadFolders()
     const interval = setInterval(loadStatus, 10000) // Refresh every 10s
     return () => clearInterval(interval)
-  }, [])
+  }, [selectedFolderId])
 
   const loadStatus = async () => {
     try {
-      const data = await getStatus()
+      const data = await getStatus(selectedFolderId)
       setStatus(data)
     } catch (error) {
       console.error('Failed to load status:', error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadFolders = async () => {
+    try {
+      const data = await getFolders()
+      setFolders(data)
+    } catch (error) {
+      console.error('Failed to load folders:', error)
+    }
+  }
+
+  const handleCreateFolder = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!newFolderName.trim()) return
+    try {
+      const newFolder = await createFolder(newFolderName.trim())
+      setFolders([...folders, newFolder])
+      setNewFolderName('')
+      setIsCreatingFolder(false)
+      setSelectedFolderId(newFolder.id)
+    } catch (error) {
+      alert('Failed to create folder')
     }
   }
 
@@ -145,11 +174,73 @@ function AppContent() {
             </div>
 
             {status && (
-              <div className="hidden md:block">
-                <StatusBar status={status} />
+              <div className="flex flex-col md:flex-row items-end md:items-center gap-4">
+                {/* Folder Selector */}
+                <div className="flex items-center gap-2">
+                  <div className="relative group">
+                    <select
+                      value={selectedFolderId || ''}
+                      onChange={(e) => setSelectedFolderId(e.target.value ? Number(e.target.value) : undefined)}
+                      className="appearance-none bg-white/50 border border-indigo-100 rounded-xl px-4 py-2 pr-10 text-sm font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all cursor-pointer hover:bg-white"
+                    >
+                      <option value="">All Photos</option>
+                      {folders.map(folder => (
+                        <option key={folder.id} value={folder.id}>{folder.name}</option>
+                      ))}
+                    </select>
+                    <FolderIcon className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-indigo-500 pointer-events-none" />
+                  </div>
+
+                  <button
+                    onClick={() => setIsCreatingFolder(true)}
+                    className="p-2 rounded-xl bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors"
+                    title="New Folder"
+                  >
+                    <Plus className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="hidden md:block">
+                  <StatusBar status={status} />
+                </div>
               </div>
             )}
           </div>
+
+          {/* Create Folder Modal Overlay */}
+          {isCreatingFolder && (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/20 backdrop-blur-sm">
+              <div className="glass rounded-2xl shadow-2xl p-6 w-full max-w-md animate-in zoom-in duration-200">
+                <h3 className="text-xl font-bold text-gray-800 mb-4">Create New Folder</h3>
+                <form onSubmit={handleCreateFolder}>
+                  <input
+                    autoFocus
+                    type="text"
+                    value={newFolderName}
+                    onChange={(e) => setNewFolderName(e.target.value)}
+                    placeholder="Folder name..."
+                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4"
+                  />
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setIsCreatingFolder(false)}
+                      className="flex-1 px-4 py-2 rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!newFolderName.trim()}
+                      className="flex-1 px-4 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                    >
+                      Create
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
         </header>
 
         {/* Navigation Tabs */}
@@ -202,22 +293,25 @@ function AppContent() {
                 <SearchView
                   onImageClick={setSelectedImage}
                   refreshTrigger={refreshTrigger}
+                  folderId={selectedFolderId}
                 />
               )}
-              {currentView === 'upload' && <UploadView />}
+              {currentView === 'upload' && <UploadView folderId={selectedFolderId} />}
               {currentView === 'gallery' && (
                 <GalleryView
                   onImageClick={setSelectedImage}
                   refreshTrigger={refreshTrigger}
+                  folderId={selectedFolderId}
                 />
               )}
-              {currentView === 'people' && <PeopleView onSelectGroup={handleSelectGroup} />}
+              {currentView === 'people' && <PeopleView onSelectGroup={handleSelectGroup} folderId={selectedFolderId} />}
               {currentView === 'face-group' && selectedGroupId && (
                 <FaceGroupView
                   groupId={selectedGroupId}
                   onBack={() => setCurrentView('people')}
                   onImageClick={setSelectedImage}
                   refreshTrigger={refreshTrigger}
+                  folderId={selectedFolderId}
                 />
               )}
             </>

@@ -8,9 +8,10 @@ import { useUploads } from '../UploadContext'
 interface GalleryViewProps {
   onImageClick: (image: ImageInfo) => void
   refreshTrigger: number
+  folderId?: number
 }
 
-export default function GalleryView({ onImageClick, refreshTrigger }: GalleryViewProps) {
+export default function GalleryView({ onImageClick, refreshTrigger, folderId }: GalleryViewProps) {
   const [images, setImages] = useState<ImageInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -28,7 +29,7 @@ export default function GalleryView({ onImageClick, refreshTrigger }: GalleryVie
     setOffset(0)
     setHasMore(true)
     loadImages(0, true)
-  }, [refreshTrigger, successCount])
+  }, [refreshTrigger, successCount, folderId])
 
   const loadImages = async (currentOffset: number, isInitial: boolean = false) => {
     if (isInitial) {
@@ -39,7 +40,7 @@ export default function GalleryView({ onImageClick, refreshTrigger }: GalleryVie
     setError(null)
 
     try {
-      const data = await getAllImages(PAGE_SIZE, currentOffset)
+      const data = await getAllImages(PAGE_SIZE, currentOffset, folderId)
       if (data.length < PAGE_SIZE) {
         setHasMore(false)
       }

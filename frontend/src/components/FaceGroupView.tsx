@@ -9,9 +9,10 @@ interface FaceGroupViewProps {
     onBack: () => void
     onImageClick: (image: ImageInfo) => void
     refreshTrigger: number
+    folderId?: number
 }
 
-export default function FaceGroupView({ groupId, onBack, onImageClick, refreshTrigger }: FaceGroupViewProps) {
+export default function FaceGroupView({ groupId, onBack, onImageClick, refreshTrigger, folderId }: FaceGroupViewProps) {
     const [images, setImages] = useState<ImageInfo[]>([])
     const [loading, setLoading] = useState(true)
     const [loadingMore, setLoadingMore] = useState(false)
@@ -24,7 +25,7 @@ export default function FaceGroupView({ groupId, onBack, onImageClick, refreshTr
         setOffset(0)
         setHasMore(true)
         loadImages(0, true)
-    }, [groupId, refreshTrigger])
+    }, [groupId, refreshTrigger, folderId])
 
     const loadImages = async (currentOffset: number, isInitial: boolean = false) => {
         if (isInitial) {
@@ -34,7 +35,7 @@ export default function FaceGroupView({ groupId, onBack, onImageClick, refreshTr
         }
 
         try {
-            const data = await getFaceGroupImages(groupId, PAGE_SIZE, currentOffset)
+            const data = await getFaceGroupImages(groupId, PAGE_SIZE, currentOffset, folderId)
             if (data.length < PAGE_SIZE) {
                 setHasMore(false)
             }

@@ -3,12 +3,17 @@ import { useDropzone } from 'react-dropzone'
 import { Upload, CheckCircle, XCircle, Loader2, Image as ImageIcon } from 'lucide-react'
 import { useUploads } from '../UploadContext'
 
-export default function UploadView() {
-  const { uploads, addUploads, clearCompleted } = useUploads();
+interface UploadViewProps {
+  folderId?: number
+}
+
+export default function UploadView({ folderId }: UploadViewProps) {
+  const { uploads: allUploads, addUploads, clearCompleted } = useUploads();
+  const uploads = allUploads.filter(u => u.folderId === folderId);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
-    addUploads(acceptedFiles);
-  }, [addUploads])
+    addUploads(acceptedFiles, folderId);
+  }, [addUploads, folderId])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
