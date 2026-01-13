@@ -6,6 +6,7 @@ Provides REST API endpoints for React frontend
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Response, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
+from contextlib import asynccontextmanager
 from typing import List
 import json
 import time
@@ -37,11 +38,19 @@ face_proc = FaceProcessor(db)
 THUMBNAIL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Run tasks on startup"""
+    # Start background thumbnail generation
+    asyncio.create_task(generate_all_missing_thumbnails())
+    yield
+
 # Create FastAPI app
 app = FastAPI(
     title="AI Image Search API",
     description="REST API for AI-powered image search",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # CORS middleware for React
@@ -555,11 +564,6 @@ async def generate_all_missing_thumbnails():
                 print(f"Failed to generate thumbnail for {img.id}: {e}")
     print(f"Finished background thumbnail generation. Generated {count} thumbnails.")
 
-@app.on_event("startup")
-async def startup_event():
-    """Run tasks on startup"""
-    # Start background thumbnail generation
-    asyncio.create_task(generate_all_missing_thumbnails())
 
 @app.get("/api/face-groups", response_model=List[FaceGroupInfo])
 async def get_face_groups():

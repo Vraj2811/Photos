@@ -58,7 +58,7 @@ export default function PeopleView({ onSelectGroup }: PeopleViewProps) {
                         <div className="relative aspect-square rounded-full overflow-hidden border-4 border-white shadow-lg group-hover:shadow-2xl group-hover:scale-105 transition-all duration-300">
                             {group.representative_image_url ? (
                                 <img
-                                    src={`http://192.168.1.20:8000${group.representative_image_url}`}
+                                    src={`http://localhost:8000${group.representative_image_url}`}
                                     alt={group.name || `Person ${group.id}`}
                                     className="w-full h-full object-cover"
                                 />

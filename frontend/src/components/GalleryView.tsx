@@ -126,7 +126,7 @@ export default function GalleryView({ onImageClick, refreshTrigger }: GalleryVie
             {images.map((image) => (
               <ImageCard
                 key={image.id}
-                imageUrl={`http://192.168.1.20:8000${image.thumbnail_url || image.image_url}`}
+                imageUrl={`http://localhost:8000${image.thumbnail_url || image.image_url}`}
                 description={image.description}
                 filename={image.filename}
                 onClick={() => onImageClick(image)}

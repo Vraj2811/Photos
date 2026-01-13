@@ -29,7 +29,7 @@ export default function ImageModal({ image, onClose, onDelete, deleting }: Image
                 {/* Image Section */}
                 <div className="w-full md:w-2/3 bg-gray-100 flex items-center justify-center p-4 min-h-[300px]">
                     <img
-                        src={`http://192.168.1.20:8000${image.image_url}`}
+                        src={`http://localhost:8000${image.image_url}`}
                         alt={image.description}
                         className="max-w-full max-h-[80vh] object-contain rounded-lg shadow-lg"
                     />
