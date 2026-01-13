@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 import os
 import sys
@@ -6,6 +5,7 @@ import time
 import hashlib
 import shutil
 import asyncio
+import argparse
 from pathlib import Path
 from typing import List, Optional
 import io
@@ -47,7 +47,7 @@ def log_processed_file(file_path: Path):
     with open(PROCESSED_LOG, "a") as f:
         f.write(f"{file_path.absolute()}\n")
 
-async def process_file(file_path: Path, processed_set: set):
+async def process_file(file_path: Path, processed_set: set, folder_id: Optional[int] = None, folder_name: Optional[str] = None):
     """Process a single image or video file."""
     abs_path = str(file_path.absolute())
     if abs_path in processed_set:
@@ -68,7 +68,14 @@ async def process_file(file_path: Path, processed_set: set):
         timestamp = int(time.time())
         file_hash = hashlib.md5(contents).hexdigest()[:8]
         new_filename = f"{timestamp}_{file_hash}{ext}"
-        target_path = UPLOAD_DIR / new_filename
+        
+        # Use folder name in path if provided
+        current_upload_dir = UPLOAD_DIR
+        if folder_name:
+            current_upload_dir = UPLOAD_DIR / folder_name
+            current_upload_dir.mkdir(parents=True, exist_ok=True)
+            
+        target_path = current_upload_dir / new_filename
 
         # Copy file to uploads
         shutil.copy2(file_path, target_path)
@@ -100,7 +107,7 @@ async def process_file(file_path: Path, processed_set: set):
 
         # Save to DB
         print(f"  - Saving to database...")
-        image_id = db.add_image(file_path.name, str(target_path), description, embedding)
+        image_id = db.add_image(file_path.name, str(target_path), description, embedding, folder_id=folder_id)
         
         if not image_id:
             if target_path.exists():
@@ -130,14 +137,35 @@ async def process_file(file_path: Path, processed_set: set):
         return False, f"Error processing {file_path.name}: {str(e)}"
 
 async def main():
-    if len(sys.argv) < 2:
-        print("Usage: python3 bulk_process.py <directory_path>")
-        return
+    parser = argparse.ArgumentParser(description="Bulk process images and videos into the AI Image Search system.")
+    parser.add_argument("directory", type=str, help="Path to the directory containing files to process")
+    parser.add_argument("--folder", type=str, help="Optional folder name to group these files into")
+    
+    args = parser.parse_args()
 
-    source_dir = Path(sys.argv[1])
+    source_dir = Path(args.directory)
     if not source_dir.is_dir():
         print(f"Error: {source_dir} is not a directory")
         return
+
+    folder_id = None
+    folder_name = args.folder
+    if folder_name:
+        # Check if folder exists in DB
+        folder = db.get_folder_by_name(folder_name)
+        if folder:
+            folder_id = folder.id
+            print(f"Using existing folder: {folder_name} (ID: {folder_id})")
+        else:
+            # Create folder in DB
+            folder_id = db.add_folder(folder_name)
+            if folder_id:
+                print(f"Created new folder in database: {folder_name} (ID: {folder_id})")
+                # Create physical directory
+                (UPLOAD_DIR / folder_name).mkdir(parents=True, exist_ok=True)
+            else:
+                print(f"Error: Failed to create folder '{folder_name}' in database.")
+                return
 
     processed_set = get_processed_files()
     files = [f for f in source_dir.iterdir() if f.is_file()]
@@ -151,7 +179,7 @@ async def main():
 
     for i, file_path in enumerate(files):
         print(f"[{i+1}/{total_files}] Processing {file_path.name}...")
-        success, message = await process_file(file_path, processed_set)
+        success, message = await process_file(file_path, processed_set, folder_id=folder_id, folder_name=folder_name)
         if success:
             if "skipped" in message:
                 skipped_count += 1

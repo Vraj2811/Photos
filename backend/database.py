@@ -191,6 +191,13 @@ class ImageDB:
         finally:
             session.close()
 
+    def get_folder_by_name(self, name):
+        session = self.SessionLocal()
+        try:
+            return session.query(Folder).filter(Folder.name == name).first()
+        finally:
+            session.close()
+
     def delete_folder(self, folder_id):
         session = self.SessionLocal()
         try:

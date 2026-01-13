@@ -134,12 +134,14 @@ export default function UploadView({ folderId }: UploadViewProps) {
       <div className="mt-8 bg-indigo-50 border-l-4 border-indigo-500 rounded-lg p-4">
         <p className="font-semibold text-indigo-900 mb-2">✨ How it works:</p>
         <ol className="text-sm text-indigo-800 space-y-1 list-decimal list-inside">
-          <li>Upload your images</li>
-          <li>AI (LLaVA) generates a description</li>
-          <li>Description is converted to vector embedding</li>
-          <li>Stored in database and indexed for search</li>
-          <li>Ready to search instantly!</li>
+          <li>Upload your images or videos</li>
+          <li>AI (LLaVA) generates a description (for images)</li>
+          <li>Faces are detected and grouped automatically</li>
+          <li>Descriptions are converted to vector embeddings</li>
+          <li>Everything is processed in parallel for maximum speed</li>
+          <li>Stored in database and indexed for instant search!</li>
         </ol>
+
       </div>
     </div>
   )
